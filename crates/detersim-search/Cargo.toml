@@ -8,9 +8,9 @@ description = "Coverage and signal guided seed search for DeterSim experiments."
 readme = "../../README.md"
 
 [dependencies]
-detersim-sim = { path = "../detersim-sim" }
-detersim-testkit = { path = "../detersim-testkit" }
+detersim-sim = { path = "../detersim-sim", version = "0.1.0" }
+detersim-testkit = { path = "../detersim-testkit", version = "0.1.0" }
 
 [dev-dependencies]
-detersim-core = { path = "../detersim-core" }
-detersim-shrink = { path = "../detersim-shrink" }
+detersim-core = { path = "../detersim-core", version = "0.1.0" }
+detersim-shrink = { path = "../detersim-shrink", version = "0.1.0" }

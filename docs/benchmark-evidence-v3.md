@@ -5,8 +5,9 @@ claim is limited: these experiments recall known bug variants under deterministi
 budgets and produce replay/shrink/artifact data. They do not prove a protocol is
 correct.
 
-The test targets are the source of truth. CLI suite mapping is still beta and
-does not yet replace the explicit Rust test targets listed here.
+The test targets are the source of truth. V3.2 CLI suite mapping now covers the
+same beta benchmark families, but the explicit Rust targets remain the release
+gates for full evidence.
 
 ## Partitioned Register Baseline
 
@@ -130,3 +131,42 @@ cargo test -p detersim-search --test search_comparison
 cargo run -p detersim-cli -- search --suite replicated-kv --budget 500 --strategy coverage-guided
 cargo run -p detersim-cli -- search --suite replicated-kv --budget 500 --compare
 ```
+
+## V3.2 Suite-Level Evidence
+
+V3.2 distinguishes reporting-stability cases from search-prioritization cases:
+
+- Every-seed-fails cases prove that suite reporting, replay/shrink metadata, and
+  artifact export are stable. They do not prove search is faster, because every
+  strategy sees a failure immediately.
+- Sparse-failure cases are the right basis for comparing `Random`,
+  `CoverageGuided`, and `FailureDirected`.
+
+Current CLI suite coverage:
+
+| Suite | Cases | Oracle families | Output |
+| --- | ---: | --- | --- |
+| `replicated-kv` | 7 | `SingleKeyKv`, append-log, negative control | suite manifest + summary JSON |
+| `mini-raft-smoke` | 9 | checker-backed history, normalized invariants | suite manifest + summary JSON |
+| `storage-faults` | 3 | durability/checksum/torn-write signatures | suite manifest + summary JSON |
+
+Current strategy comparison output:
+
+| Suite | Strategies | Evidence recorded |
+| --- | --- | --- |
+| `replicated-kv` | `Random`, `CoverageGuided`, `FailureDirected` | first failing seed/rank, failures, unique coverage, retained candidates, strategy wins |
+| `mini-raft-smoke` | `Random`, `CoverageGuided`, `FailureDirected` | same fields; useful for smoke regression, not a full 50k soak replacement |
+
+V3.2 source-of-truth commands:
+
+```powershell
+cargo test -p detersim-testkit --test experiment_suite_manifest
+cargo test -p detersim-search --test suite_search_comparison
+cargo test -p detersim-cli --test cli_artifact_workflow
+cargo run -p detersim-cli -- run-suite --suite replicated-kv --out target/detersim-artifacts/replicated-kv-suite.json
+cargo run -p detersim-cli -- search --suite mini-raft-smoke --compare --budget 1000 --out target/detersim-artifacts/mini-raft-search.json
+```
+
+Known limitation: most built-in bug variants are intentionally dense recall
+cases. They are strong tests for deterministic reporting and shrink preservation,
+but only sparse cases should be used to claim search efficiency improvements.

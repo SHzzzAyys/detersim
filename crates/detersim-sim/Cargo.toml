@@ -8,10 +8,10 @@ readme = "../../README.md"
 description = "Deterministic single-threaded executor, simulated network/storage, and entropy tape for detersim."
 
 [dependencies]
-detersim-core = { path = "../detersim-core" }
-detersim-nemesis = { path = "../detersim-nemesis" }
+detersim-core = { path = "../detersim-core", version = "0.1.0" }
+detersim-nemesis = { path = "../detersim-nemesis", version = "0.1.0" }
 # Intentionally zero third-party dependencies in the simulation core.
 
 [dev-dependencies]
-detersim-check = { path = "../detersim-check" }
-detersim-protocols = { path = "../detersim-protocols" }
+detersim-check = { path = "../detersim-check", version = "0.1.0" }
+detersim-protocols = { path = "../detersim-protocols", version = "0.1.0" }

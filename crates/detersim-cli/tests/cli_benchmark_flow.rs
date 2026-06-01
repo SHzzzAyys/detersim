@@ -13,7 +13,8 @@ fn cli_runs_real_benchmark_suites_and_search_comparison() {
             String::from_utf8_lossy(&output.stderr)
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("\"schema_version\":2"));
+        assert!(stdout.contains("\"schema_version\":3"));
+        assert!(stdout.contains("\"summary\""));
         assert!(stdout.contains("\"policy_failures\":0"));
     }
 
@@ -45,8 +46,8 @@ fn cli_runs_real_benchmark_suites_and_search_comparison() {
         .expect("run comparison");
     assert!(compare.status.success());
     let stdout = String::from_utf8_lossy(&compare.stdout);
-    assert!(stdout.contains("\"best_strategy\""));
-    assert!(stdout.contains("\"rows\""));
+    assert!(stdout.contains("\"strategy_wins\""));
+    assert!(stdout.contains("\"cases\""));
 }
 
 fn cli_bin() -> String {

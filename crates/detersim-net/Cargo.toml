@@ -8,4 +8,4 @@ description = "Deterministic stream and socket-style protocol helpers for DeterS
 readme = "../../README.md"
 
 [dependencies]
-detersim-core = { path = "../detersim-core" }
+detersim-core = { path = "../detersim-core", version = "0.1.0" }

@@ -159,6 +159,51 @@ pub enum RecallPolicy {
     Informational,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Oracle category used by a suite manifest.
+///
+/// This is descriptive metadata for users and CLI output. The actual decision
+/// remains the [`ExperimentCase::oracle`] function so the manifest cannot
+/// bypass the deterministic runtime boundary.
+pub enum OracleKind {
+    Invariant,
+    Linearizability,
+    Storage,
+    Deadlock,
+    Panic,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// When a harness should preserve or render artifacts for a case.
+pub enum ArtifactPolicy {
+    Always,
+    OnFailure,
+    Never,
+}
+
+#[derive(Clone, Debug)]
+/// Public description of one experiment case inside a suite.
+///
+/// A manifest is intentionally lightweight: it records the case name, expected
+/// outcome, oracle family, seed budget, and artifact policy. It does not own
+/// closures or runtime handles, which keeps it serializable and stable for CLI
+/// output.
+pub struct ExperimentCaseManifest {
+    pub name: &'static str,
+    pub recall_policy: RecallPolicy,
+    pub oracle: OracleKind,
+    pub expected_signature: Option<FailureSignature>,
+    pub seed_count: u64,
+    pub artifact_policy: ArtifactPolicy,
+}
+
+#[derive(Clone, Debug)]
+/// Public description of a deterministic experiment suite.
+pub struct ExperimentSuiteManifest {
+    pub name: &'static str,
+    pub cases: Vec<ExperimentCaseManifest>,
+}
+
 /// A deterministic collection of experiment cases.
 pub struct ExperimentSuite {
     pub name: &'static str,
@@ -641,6 +686,31 @@ pub fn experiment_summary_to_json(summary: &ExperimentSummary) -> String {
     )
 }
 
+/// Export a suite manifest as deterministic JSON.
+pub fn experiment_suite_manifest_to_json(manifest: &ExperimentSuiteManifest) -> String {
+    let cases: Vec<String> = manifest
+        .cases
+        .iter()
+        .map(|case| {
+            format!(
+                "{{\"name\":\"{}\",\"recall_policy\":\"{}\",\"oracle\":\"{}\",\"expected_signature\":{},\"seed_count\":{},\"artifact_policy\":\"{}\"}}",
+                escape_json(case.name),
+                recall_policy_label(case.recall_policy),
+                oracle_kind_label(case.oracle),
+                option_signature_json(case.expected_signature.as_ref()),
+                case.seed_count,
+                artifact_policy_label(case.artifact_policy)
+            )
+        })
+        .collect();
+    format!(
+        "{{\"schema_version\":3,\"suite\":\"{}\",\"case_count\":{},\"cases\":[{}]}}",
+        escape_json(manifest.name),
+        manifest.cases.len(),
+        cases.join(",")
+    )
+}
+
 /// Export a matrix report as deterministic JSON.
 pub fn experiment_matrix_report_to_json(report: &ExperimentMatrixReport) -> String {
     let signatures: Vec<String> = report
@@ -667,6 +737,32 @@ pub fn experiment_matrix_report_to_json(report: &ExperimentMatrixReport) -> Stri
         option_usize(report.max_minimized_tape_len),
         signatures.join(","),
     )
+}
+
+fn recall_policy_label(policy: RecallPolicy) -> &'static str {
+    match policy {
+        RecallPolicy::MustRecall => "must_recall",
+        RecallPolicy::MustNotRecall => "must_not_recall",
+        RecallPolicy::Informational => "informational",
+    }
+}
+
+fn oracle_kind_label(kind: OracleKind) -> &'static str {
+    match kind {
+        OracleKind::Invariant => "invariant",
+        OracleKind::Linearizability => "linearizability",
+        OracleKind::Storage => "storage",
+        OracleKind::Deadlock => "deadlock",
+        OracleKind::Panic => "panic",
+    }
+}
+
+fn artifact_policy_label(policy: ArtifactPolicy) -> &'static str {
+    match policy {
+        ArtifactPolicy::Always => "always",
+        ArtifactPolicy::OnFailure => "on_failure",
+        ArtifactPolicy::Never => "never",
+    }
 }
 
 fn removed_labels_json(labels: &[RemovedLabel]) -> String {

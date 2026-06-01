@@ -8,4 +8,4 @@ readme = "../../README.md"
 description = "Deterministic fault-injection actions and connectivity models for detersim."
 
 [dependencies]
-detersim-core = { path = "../detersim-core" }
+detersim-core = { path = "../detersim-core", version = "0.1.0" }

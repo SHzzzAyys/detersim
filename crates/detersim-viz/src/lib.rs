@@ -59,6 +59,20 @@ pub struct CausalEdge {
 impl CausalGraph {
     /// Build a deterministic graph from run trace, nemesis trace, and history.
     pub fn from_run(report: &RunReport) -> Self {
+        Self::from_sections(report, None, None)
+    }
+
+    /// Build a deterministic graph from runtime, checker, and shrink sections.
+    ///
+    /// Optional JSON sections are treated as opaque artifact nodes. The graph
+    /// still links them to stable history nodes so a viewer can explain how the
+    /// preserved failure relates to the observed client history without parsing
+    /// non-core schemas in this crate.
+    pub fn from_sections(
+        report: &RunReport,
+        checker_json: Option<&str>,
+        shrink_json: Option<&str>,
+    ) -> Self {
         let mut nodes = Vec::new();
         for (idx, line) in report.nemesis_trace.iter().enumerate() {
             nodes.push(CausalNode {
@@ -81,6 +95,39 @@ impl CausalGraph {
                 label: line.clone(),
             });
         }
+        for (idx, line) in report.trace.iter().enumerate() {
+            if let Some((from, to, kind)) = message_edge(line) {
+                nodes.push(CausalNode {
+                    id: format!("message-{idx}"),
+                    kind: "message".to_string(),
+                    label: format!("{from}->{to}"),
+                });
+                nodes.push(CausalNode {
+                    id: format!("message-send-{idx}"),
+                    kind: "message-send".to_string(),
+                    label: format!("{from}->{to}"),
+                });
+                nodes.push(CausalNode {
+                    id: format!("message-result-{idx}"),
+                    kind: kind.to_string(),
+                    label: line.clone(),
+                });
+            }
+        }
+        if let Some(checker) = checker_json {
+            nodes.push(CausalNode {
+                id: "checker-0".to_string(),
+                kind: "checker".to_string(),
+                label: checker.to_string(),
+            });
+        }
+        if let Some(shrink) = shrink_json {
+            nodes.push(CausalNode {
+                id: "shrink-0".to_string(),
+                kind: "shrink".to_string(),
+                label: shrink.to_string(),
+            });
+        }
 
         let mut edges = Vec::new();
         for idx in 1..report.trace.len() {
@@ -98,6 +145,65 @@ impl CausalGraph {
                     kind: "observed-as".to_string(),
                 });
             }
+        }
+        for (idx, line) in report.trace.iter().enumerate() {
+            if message_edge(line).is_some() {
+                edges.push(CausalEdge {
+                    from: format!("message-send-{idx}"),
+                    to: format!("message-{idx}"),
+                    kind: "message-send".to_string(),
+                });
+                edges.push(CausalEdge {
+                    from: format!("message-{idx}"),
+                    to: format!("message-result-{idx}"),
+                    kind: "message-delivery-result".to_string(),
+                });
+                edges.push(CausalEdge {
+                    from: format!("message-result-{idx}"),
+                    to: format!("trace-{idx}"),
+                    kind: "rendered-as-trace".to_string(),
+                });
+            }
+        }
+        for nemesis_idx in 0..report.nemesis_trace.len() {
+            for (trace_idx, trace) in report.trace.iter().enumerate() {
+                if trace_is_fault_affected(trace) {
+                    edges.push(CausalEdge {
+                        from: format!("nemesis-{nemesis_idx}"),
+                        to: format!("trace-{trace_idx}"),
+                        kind: "nemesis-affects-trace".to_string(),
+                    });
+                }
+            }
+            for (history_idx, history) in report.history.iter().enumerate() {
+                if history_is_fault_affected(history) {
+                    edges.push(CausalEdge {
+                        from: format!("nemesis-{nemesis_idx}"),
+                        to: format!("history-{history_idx}"),
+                        kind: "nemesis-affects-history".to_string(),
+                    });
+                }
+            }
+        }
+        if checker_json.is_some() {
+            for idx in 0..report.history.len() {
+                edges.push(CausalEdge {
+                    from: "checker-0".to_string(),
+                    to: format!("history-{idx}"),
+                    kind: "checker-conflict-op".to_string(),
+                });
+            }
+        }
+        if shrink_json.is_some() {
+            edges.push(CausalEdge {
+                from: "shrink-0".to_string(),
+                to: if report.history.is_empty() {
+                    "trace-0".to_string()
+                } else {
+                    "history-0".to_string()
+                },
+                kind: "preserves-failure".to_string(),
+            });
         }
         Self { nodes, edges }
     }
@@ -229,6 +335,19 @@ pub fn debug_artifact_v3_html(artifact: &DebugArtifactV3) -> String {
     )
 }
 
+/// Render raw artifact JSON in the same self-contained viewer shell.
+///
+/// This is used by CLI workflows that load an artifact from disk and only need
+/// version-aware display, not schema-specific reconstruction.
+pub fn raw_debug_artifact_html(title: &str, json: &str) -> String {
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title><style>body{{font-family:system-ui,sans-serif;margin:24px;line-height:1.4}}pre{{white-space:pre-wrap;border:1px solid #ccc;padding:12px;overflow:auto}}.panel{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}}</style></head><body><h1>{}</h1><section><h2>artifact</h2><pre id=\"artifact\"></pre></section><section class=\"panel\"><div><h2>failure signature</h2><pre id=\"signature\"></pre></div><div><h2>causal graph</h2><pre id=\"causal\"></pre></div><div><h2>shrink</h2><pre id=\"shrink\"></pre></div></section><script>const artifact={};function pretty(v){{return v===null||v===undefined?'':JSON.stringify(v,null,2);}}document.getElementById('artifact').textContent=pretty(artifact);document.getElementById('signature').textContent=pretty(artifact.failure_signature);document.getElementById('causal').textContent=pretty(artifact.causal_graph);document.getElementById('shrink').textContent=pretty(artifact.shrink);</script></body></html>",
+        escape_json(title),
+        escape_json(title),
+        json
+    )
+}
+
 fn string_array(values: &[String]) -> String {
     let items: Vec<String> = values
         .iter()
@@ -256,6 +375,42 @@ fn tape_events_json(report: &RunReport) -> String {
         })
         .collect();
     format!("[{}]", items.join(","))
+}
+
+fn message_edge(line: &str) -> Option<(&str, &str, &'static str)> {
+    let marker = if line.contains("deliver ") {
+        "deliver "
+    } else if line.contains("drop-") {
+        line.split_once("] ")?.1.split_once(' ')?.0
+    } else {
+        return None;
+    };
+    let after = line.split_once(marker)?.1;
+    let route = after.split_whitespace().next()?;
+    let (from, to) = route.split_once("->")?;
+    let kind = if marker == "deliver " {
+        "message-delivered"
+    } else {
+        "message-dropped"
+    };
+    Some((from, to, kind))
+}
+
+fn trace_is_fault_affected(line: &str) -> bool {
+    line.contains("drop-")
+        || line.contains("crash")
+        || line.contains("restart")
+        || line.contains("BitRot")
+        || line.contains("TornWrite")
+        || line.contains("LostOnCrash")
+}
+
+fn history_is_fault_affected(line: &str) -> bool {
+    line.contains("storage-corruption")
+        || line.contains("raft-bug")
+        || line.contains("raft-invariant")
+        || line.contains("checksum:bad")
+        || line.contains("missing-message")
 }
 
 fn trace_kind(line: &str) -> &str {
