@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: build
+        run: cargo build --workspace
+      - name: test
+        run: cargo test --workspace
+      - name: clippy
+        run: cargo clippy --workspace -- -D warnings
+      - name: determinism lint
+        run: bash scripts/lint_determinism.sh
+      - name: replicated kv recall
+        run: cargo test -p detersim-testkit --test replicated_kv
+      - name: mini raft recall
+        run: cargo test -p detersim-sim --test mini_raft_recall
+      - name: release determinism soak
+        env:
+          DST_SEED_COUNT: "10000"
+        run: cargo test --release --test determinism_meta

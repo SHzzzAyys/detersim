@@ -1,0 +1,29 @@
+name: nightly-soak
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: full workspace tests
+        run: cargo test --workspace
+      - name: experiment matrix
+        run: cargo test -p detersim-testkit --test experiment_matrix
+      - name: replicated kv recall
+        run: cargo test -p detersim-testkit --test replicated_kv
+      - name: mini raft recall
+        run: cargo test -p detersim-sim --test mini_raft_recall
+      - name: storage faults
+        run: cargo test -p detersim-sim --test storage_faults
+      - name: nemesis faults
+        run: cargo test -p detersim-sim --test nemesis_faults
+      - name: 10k release determinism soak
+        env:
+          DST_SEED_COUNT: "10000"
+        run: cargo test --release --test determinism_meta

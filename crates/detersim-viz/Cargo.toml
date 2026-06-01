@@ -1,0 +1,9 @@
+[package]
+name = "detersim-viz"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Local JSON and HTML trace export helpers for detersim."
+
+[dependencies]
+detersim-sim = { path = "../detersim-sim" }

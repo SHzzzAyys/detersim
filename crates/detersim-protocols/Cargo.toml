@@ -1,0 +1,10 @@
+[package]
+name = "detersim-protocols"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Reference protocol SUTs used by DeterSim recall experiments."
+
+[dependencies]
+detersim-check = { path = "../detersim-check" }
+detersim-core = { path = "../detersim-core" }

@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/detersim-check",
+    "crates/detersim-core",
+    "crates/detersim-nemesis",
+    "crates/detersim-protocols",
+    "crates/detersim-shrink",
+    "crates/detersim-sim",
+    "crates/detersim-testkit",
+    "crates/detersim-viz",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/SHzzzAyys/detersim"
+
+# Optimize test/soak runs; determinism soak over many seeds wants release speed.
+[profile.release]
+opt-level = 3
