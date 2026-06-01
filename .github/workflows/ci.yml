@@ -22,8 +22,14 @@ jobs:
         run: bash scripts/lint_determinism.sh
       - name: replicated kv recall
         run: cargo test -p detersim-testkit --test replicated_kv
+      - name: experiment suite
+        run: cargo test -p detersim-testkit --test experiment_suite
       - name: mini raft recall
         run: cargo test -p detersim-sim --test mini_raft_recall
+      - name: label-aware shrink
+        run: cargo test -p detersim-shrink --test label_aware_shrink
+      - name: debug artifact
+        run: cargo test -p detersim-viz --test debug_artifact
       - name: release determinism soak
         env:
           DST_SEED_COUNT: "10000"

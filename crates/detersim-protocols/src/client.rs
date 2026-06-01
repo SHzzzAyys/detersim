@@ -36,6 +36,15 @@ pub async fn run_mini_raft_client<E: Env>(env: E, config: MiniRaftConfig) -> Vec
     }
 }
 
+/// Run a Mini-Raft key/value workload and return checker-readable operations.
+pub async fn run_mini_raft_kv_client<E: Env>(env: E, config: MiniRaftConfig) -> Vec<RecordedOp> {
+    match config.bug {
+        RaftBugVariant::FollowerStaleRead => run_raft_stale_read_history_client(env).await,
+        RaftBugVariant::Correct => run_raft_correct_history_client(env).await,
+        _ => Vec::new(),
+    }
+}
+
 /// Collect protocol observer events from the network.
 pub async fn collect_protocol_events<E: Env>(env: E, expected: usize) -> Vec<String> {
     let net = env.net();
@@ -163,6 +172,37 @@ async fn run_raft_correct_client<E: Env>(env: E) -> Vec<String> {
     }
 }
 
+async fn run_raft_correct_history_client<E: Env>(env: E) -> Vec<RecordedOp> {
+    let clock = env.clock();
+    let net = env.net();
+    let mut ops = Vec::new();
+
+    let invoke = clock.now();
+    net.send(0, b"client-write:x".to_vec()).await;
+    let (_from, ack) = net.recv().await;
+    if ack == b"ok" {
+        ops.push(RecordedOp::KvPut {
+            id: 1,
+            process: env.node_id(),
+            value: 1,
+            invoke,
+            complete: clock.now(),
+        });
+    }
+
+    let invoke = clock.now();
+    net.send(0, b"client-read".to_vec()).await;
+    let (_from, value) = net.recv().await;
+    ops.push(RecordedOp::KvGet {
+        id: 2,
+        process: env.node_id(),
+        value: (value == b"value:x").then_some(1),
+        invoke,
+        complete: clock.now(),
+    });
+    ops
+}
+
 async fn run_raft_stale_read_client<E: Env>(env: E) -> Vec<String> {
     let net = env.net();
     net.send(0, b"write:x".to_vec()).await;
@@ -177,6 +217,37 @@ async fn run_raft_stale_read_client<E: Env>(env: E) -> Vec<String> {
     } else {
         Vec::new()
     }
+}
+
+async fn run_raft_stale_read_history_client<E: Env>(env: E) -> Vec<RecordedOp> {
+    let clock = env.clock();
+    let net = env.net();
+    let mut ops = Vec::new();
+
+    let invoke = clock.now();
+    net.send(0, b"write:x".to_vec()).await;
+    let (_from, ack) = net.recv().await;
+    if ack == b"ok" {
+        ops.push(RecordedOp::KvPut {
+            id: 1,
+            process: env.node_id(),
+            value: 1,
+            invoke,
+            complete: clock.now(),
+        });
+    }
+
+    let invoke = clock.now();
+    net.send(1, b"read".to_vec()).await;
+    let (_from, value) = net.recv().await;
+    ops.push(RecordedOp::KvGet {
+        id: 2,
+        process: env.node_id(),
+        value: (value == b"value:x").then_some(1),
+        invoke,
+        complete: clock.now(),
+    });
+    ops
 }
 
 async fn run_raft_duplicate_client<E: Env>(env: E) -> Vec<String> {

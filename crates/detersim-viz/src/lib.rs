@@ -4,9 +4,19 @@
 
 use detersim_sim::RunReport;
 
+#[derive(Clone, Debug)]
+pub struct DebugArtifact {
+    pub title: String,
+    pub run: RunReport,
+    pub experiment_json: Option<String>,
+    pub checker_json: Option<String>,
+    pub shrink_json: Option<String>,
+    pub failure_signature_json: Option<String>,
+}
+
 pub fn run_report_to_json(report: &RunReport) -> String {
     format!(
-        "{{\"schema_version\":1,\"seed\":{},\"dispatched\":{},\"aborted\":{},\"deadlocked\":{},\"trace\":{},\"history\":{},\"nemesis\":{},\"nemesis_trace\":{},\"tape\":{},\"tape_replaying\":{},\"tape_input_len\":{},\"tape_cursor\":{},\"tape_consumed_all\":{},\"tape_exhausted\":{}}}",
+        "{{\"schema_version\":2,\"seed\":{},\"dispatched\":{},\"aborted\":{},\"deadlocked\":{},\"trace\":{},\"history\":{},\"nemesis\":{},\"nemesis_trace\":{},\"tape\":{},\"tape_events\":{},\"tape_replaying\":{},\"tape_input_len\":{},\"tape_cursor\":{},\"tape_consumed_all\":{},\"tape_exhausted\":{}}}",
         report.seed,
         report.dispatched,
         report.aborted,
@@ -16,6 +26,7 @@ pub fn run_report_to_json(report: &RunReport) -> String {
         string_array(&report.nemesis_trace),
         string_array(&report.nemesis_trace),
         u64_array(&report.tape_log),
+        tape_events_json(report),
         report.tape_replaying,
         option_usize(report.tape_input_len),
         report.tape_cursor,
@@ -24,11 +35,35 @@ pub fn run_report_to_json(report: &RunReport) -> String {
     )
 }
 
-pub fn timeline_html(report: &RunReport) -> String {
-    let json = run_report_to_json(report);
+pub fn debug_artifact_to_json(artifact: &DebugArtifact) -> String {
     format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>detersim trace</title><style>body{{font-family:system-ui,sans-serif;margin:24px;line-height:1.4}}section{{margin-block:18px}}pre{{white-space:pre-wrap;border:1px solid #ccc;padding:12px;overflow:auto}}.nemesis{{border-color:#9b2c2c;background:#fff5f5}}.history{{border-color:#2b6cb0;background:#ebf8ff}}.lanes{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}}h2{{font-size:16px;margin-bottom:6px}}</style></head><body><h1>detersim trace seed {}</h1><section><h2>nemesis</h2><pre class=\"nemesis\" id=\"nemesis\"></pre></section><section><h2>history</h2><pre class=\"history\" id=\"history\"></pre></section><section><h2>node lanes</h2><div class=\"lanes\" id=\"lanes\"></div></section><section><h2>raw trace</h2><pre id=\"trace\"></pre></section><script>const report={};const byNode=new Map();function add(node,line){{if(!byNode.has(node))byNode.set(node,[]);byNode.get(node).push(line);}}for(const line of report.trace){{const deliver=line.match(/deliver (\\d+)->(\\d+)/);if(deliver){{add(deliver[1],line);add(deliver[2],line);continue;}}const poll=line.match(/poll task=(\\d+)/);add(poll?`task-${{poll[1]}}`:'system',line);}}document.getElementById('nemesis').textContent=report.nemesis_trace.join('\\n');document.getElementById('history').textContent=report.history.join('\\n');document.getElementById('trace').textContent=report.trace.join('\\n');const lanes=document.getElementById('lanes');for(const [node,lines] of [...byNode.entries()].sort()){{const section=document.createElement('section');const h=document.createElement('h2');h.textContent=node;const pre=document.createElement('pre');pre.textContent=lines.join('\\n');section.append(h,pre);lanes.append(section);}}</script></body></html>",
-        report.seed, json
+        "{{\"schema_version\":2,\"title\":\"{}\",\"run\":{},\"experiment\":{},\"checker\":{},\"shrink\":{},\"failure_signature\":{}}}",
+        escape_json(&artifact.title),
+        run_report_to_json(&artifact.run),
+        option_raw_json(artifact.experiment_json.as_deref()),
+        option_raw_json(artifact.checker_json.as_deref()),
+        option_raw_json(artifact.shrink_json.as_deref()),
+        option_raw_json(artifact.failure_signature_json.as_deref()),
+    )
+}
+
+pub fn timeline_html(report: &RunReport) -> String {
+    debug_artifact_html(&DebugArtifact {
+        title: format!("detersim trace seed {}", report.seed),
+        run: report.clone(),
+        experiment_json: None,
+        checker_json: None,
+        shrink_json: None,
+        failure_signature_json: None,
+    })
+}
+
+pub fn debug_artifact_html(artifact: &DebugArtifact) -> String {
+    let json = debug_artifact_to_json(artifact);
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>detersim debug artifact</title><style>body{{font-family:system-ui,sans-serif;margin:24px;line-height:1.4}}section{{margin-block:18px}}pre{{white-space:pre-wrap;border:1px solid #ccc;padding:12px;overflow:auto}}.nemesis{{border-color:#9b2c2c;background:#fff5f5}}.history{{border-color:#2b6cb0;background:#ebf8ff}}.conflict{{border-color:#744210;background:#fffff0}}.lanes{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}}h2{{font-size:16px;margin-bottom:6px}}</style></head><body><h1>{}</h1><section><h2>failure signature</h2><pre class=\"conflict\" id=\"signature\"></pre></section><section><h2>experiment</h2><pre id=\"experiment\"></pre></section><section><h2>checker / shrink</h2><pre id=\"checker\"></pre><pre id=\"shrink\"></pre></section><section><h2>nemesis</h2><pre class=\"nemesis\" id=\"nemesis\"></pre></section><section><h2>history</h2><pre class=\"history\" id=\"history\"></pre></section><section><h2>tape events</h2><pre id=\"tape\"></pre></section><section><h2>node lanes</h2><div class=\"lanes\" id=\"lanes\"></div></section><section><h2>raw trace</h2><pre id=\"trace\"></pre></section><script>const artifact={};const report=artifact.run;const byNode=new Map();function add(node,line){{if(!byNode.has(node))byNode.set(node,[]);byNode.get(node).push(line);}}for(const line of report.trace){{const deliver=line.match(/deliver (\\d+)->(\\d+)/);if(deliver){{add(deliver[1],line);add(deliver[2],line);continue;}}const poll=line.match(/poll task=(\\d+)/);add(poll?`task-${{poll[1]}}`:'system',line);}}function pretty(value){{return value===null||value===undefined?'':JSON.stringify(value,null,2);}}document.getElementById('signature').textContent=pretty(artifact.failure_signature);document.getElementById('experiment').textContent=pretty(artifact.experiment);document.getElementById('checker').textContent=pretty(artifact.checker);document.getElementById('shrink').textContent=pretty(artifact.shrink);document.getElementById('nemesis').textContent=report.nemesis_trace.join('\\n');document.getElementById('history').textContent=report.history.join('\\n');document.getElementById('tape').textContent=pretty(report.tape_events);document.getElementById('trace').textContent=report.trace.join('\\n');const lanes=document.getElementById('lanes');for(const [node,lines] of [...byNode.entries()].sort()){{const section=document.createElement('section');const h=document.createElement('h2');h.textContent=node;const pre=document.createElement('pre');pre.textContent=lines.join('\\n');section.append(h,pre);lanes.append(section);}}</script></body></html>",
+        escape_json(&artifact.title),
+        json
     )
 }
 
@@ -43,6 +78,26 @@ fn string_array(values: &[String]) -> String {
 fn u64_array(values: &[u64]) -> String {
     let items: Vec<String> = values.iter().map(u64::to_string).collect();
     format!("[{}]", items.join(","))
+}
+
+fn tape_events_json(report: &RunReport) -> String {
+    let items: Vec<String> = report
+        .tape_events
+        .iter()
+        .map(|event| {
+            format!(
+                "{{\"index\":{},\"label\":\"{}\",\"value\":{}}}",
+                event.index,
+                event.label.as_str(),
+                event.value
+            )
+        })
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
+fn option_raw_json(value: Option<&str>) -> String {
+    value.unwrap_or("null").to_string()
 }
 
 fn option_usize(value: Option<usize>) -> String {
@@ -76,8 +131,9 @@ mod tests {
     fn json_contains_trace_and_seed() {
         let report = pingpong_world(7);
         let json = run_report_to_json(&report);
-        assert!(json.contains("\"schema_version\":1"));
+        assert!(json.contains("\"schema_version\":2"));
         assert!(json.contains("\"seed\":7"));
+        assert!(json.contains("\"tape_events\""));
         assert!(json.contains("\"trace\""));
     }
 
@@ -86,6 +142,25 @@ mod tests {
         let report = pingpong_world(7);
         let html = timeline_html(&report);
         assert!(html.contains("<!doctype html>"));
+        assert!(!html.contains("https://"));
+    }
+
+    #[test]
+    fn debug_artifact_contains_experiment_sections() {
+        let report = pingpong_world(7);
+        let artifact = DebugArtifact {
+            title: "debug".to_string(),
+            run: report,
+            experiment_json: Some("{\"case\":\"x\"}".to_string()),
+            checker_json: Some("{\"explored_states\":1}".to_string()),
+            shrink_json: Some("{\"ratio\":0.5}".to_string()),
+            failure_signature_json: Some("{\"type\":\"InvariantViolated\"}".to_string()),
+        };
+        let json = debug_artifact_to_json(&artifact);
+        assert!(json.contains("\"schema_version\":2"));
+        assert!(json.contains("\"experiment\""));
+        let html = debug_artifact_html(&artifact);
+        assert!(html.contains("failure signature"));
         assert!(!html.contains("https://"));
     }
 }

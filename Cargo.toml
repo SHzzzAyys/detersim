@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/detersim-check",
+    "crates/detersim-cli",
     "crates/detersim-core",
     "crates/detersim-nemesis",
     "crates/detersim-protocols",

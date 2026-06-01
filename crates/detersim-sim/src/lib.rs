@@ -23,7 +23,9 @@ use detersim_nemesis::{ConnectivityMatrix, NemesisAction, NemesisDraw, NemesisPl
 pub mod scenarios;
 pub mod tape;
 
-use tape::{EntropyTape, TapeDiagnostics, TapeLabel};
+pub use tape::{TapeEvent, TapeLabel};
+
+use tape::{EntropyTape, TapeDiagnostics};
 
 const DEFAULT_HORIZON_NS: u64 = 60_000_000_000;
 const DEFAULT_MAX_EVENTS: u64 = 5_000_000;
@@ -811,6 +813,7 @@ pub struct RunReport {
     pub nemesis_trace: Vec<String>,
     pub history: Vec<String>,
     pub tape_log: Vec<u64>,
+    pub tape_events: Vec<TapeEvent>,
     pub tape_replaying: bool,
     pub tape_input_len: Option<usize>,
     pub tape_cursor: usize,
@@ -1074,6 +1077,7 @@ impl World {
         let deadlocked = g.queue.is_empty() && !g.tasks.is_empty();
         let aborted = g.dispatched >= g.config.max_events || g.now.as_nanos() > g.config.horizon_ns;
         let tape_log = g.tape.log().to_vec();
+        let tape_events = g.tape.events().to_vec();
         let tape: TapeDiagnostics = g.tape.diagnostics();
         RunReport {
             seed: g.seed,
@@ -1086,6 +1090,7 @@ impl World {
             parked_tasks: g.tasks.len(),
             tape_log_len: tape_log.len(),
             tape_log,
+            tape_events,
             tape_replaying: tape.replaying,
             tape_input_len: tape.input_len,
             tape_cursor: tape.cursor,

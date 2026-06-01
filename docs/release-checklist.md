@@ -25,9 +25,12 @@ $env:DST_SEED_COUNT='10000'; cargo test --release --test determinism_meta
 cargo test -p detersim-testkit --test partitioned_register
 cargo test -p detersim-testkit --test replicated_kv
 cargo test -p detersim-testkit --test experiment_matrix
+cargo test -p detersim-testkit --test experiment_suite
 cargo test -p detersim-sim --test nemesis_faults
 cargo test -p detersim-sim --test storage_faults
 cargo test -p detersim-sim --test mini_raft_recall
+cargo test -p detersim-shrink --test label_aware_shrink
+cargo test -p detersim-viz --test debug_artifact
 ```
 
 ## Artifact check
@@ -36,6 +39,12 @@ cargo test -p detersim-sim --test mini_raft_recall
 - At least one Mini-Raft failure has a reproducible trace and protocol label.
 - Shrink report records original length, minimized length, attempts, accepted
   removals, and signature preservation.
+- V2 alpha tag command:
+
+```powershell
+git tag -a v2.0.0-alpha.1 -m "DeterSim v2.0.0-alpha.1"
+git push origin v2.0.0-alpha.1
+```
 
 ## Stop rules
 

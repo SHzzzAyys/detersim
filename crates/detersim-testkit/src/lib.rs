@@ -6,7 +6,9 @@
 use std::collections::BTreeMap;
 
 use detersim_check::LinearizabilityResult;
-use detersim_shrink::{shrink_tape_with_config, ShrinkConfig, ShrinkReport};
+use detersim_shrink::{
+    shrink_tape_label_aware_with_config, RemovedLabel, ShrinkConfig, ShrinkReport,
+};
 use detersim_sim::RunReport;
 use detersim_viz::{run_report_to_json, timeline_html};
 
@@ -134,6 +136,7 @@ pub struct ExperimentReport {
     pub shrink_ratio: Option<f64>,
     pub shrink_attempts: Option<usize>,
     pub accepted_removals: Option<usize>,
+    pub removed_labels: Vec<RemovedLabel>,
     pub artifact_json_bytes: Option<usize>,
     pub artifact_html_bytes: Option<usize>,
     pub replay_tape_input_len: Option<usize>,
@@ -146,6 +149,43 @@ pub struct ExperimentReport {
     pub replay_byte_identical: bool,
     pub replay_matched_signature: bool,
     pub minimized_matched_signature: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How a suite should interpret one experiment result.
+pub enum RecallPolicy {
+    MustRecall,
+    MustNotRecall,
+    Informational,
+}
+
+/// A deterministic collection of experiment cases.
+pub struct ExperimentSuite {
+    pub name: &'static str,
+    pub cases: Vec<(ExperimentCase, RecallPolicy)>,
+}
+
+#[derive(Clone, Debug)]
+/// Debug artifact metadata for a suite case.
+pub struct ExperimentArtifact {
+    pub case_name: &'static str,
+    pub seed: Option<u64>,
+    pub json_bytes: Option<usize>,
+    pub html_bytes: Option<usize>,
+    pub signature: Option<FailureSignature>,
+}
+
+#[derive(Clone, Debug)]
+/// Suite-level report over multiple experiment cases.
+pub struct ExperimentSummary {
+    pub name: &'static str,
+    pub total_cases: usize,
+    pub required_recalled: usize,
+    pub required_not_recalled: usize,
+    pub policy_failures: usize,
+    pub matrix: ExperimentMatrixReport,
+    pub artifacts: Vec<ExperimentArtifact>,
+    pub results: Vec<RecallResult>,
 }
 
 #[derive(Clone, Debug)]
@@ -184,6 +224,7 @@ pub struct FailureDebugArtifact {
     pub generated: RunReport,
     pub minimized_replay: RunReport,
     pub shrink: ShrinkReport,
+    pub removed_labels: Vec<RemovedLabel>,
     pub minimized_json: String,
     pub minimized_html: String,
 }
@@ -212,8 +253,14 @@ where
         "cannot shrink seed {seed}: original tape replay does not reproduce the failure"
     );
 
-    let shrink = shrink_tape_with_config(
+    let labels: Vec<String> = generated
+        .tape_events
+        .iter()
+        .map(|event| event.label.as_str().to_string())
+        .collect();
+    let shrink = shrink_tape_label_aware_with_config(
         &generated.tape_log,
+        &labels,
         |candidate| {
             let report = replay(seed, candidate.to_vec());
             still_fails(&report)
@@ -221,11 +268,11 @@ where
         config,
     );
     assert!(
-        shrink.reproduced,
+        shrink.shrink.reproduced,
         "shrink reported non-reproducing original tape at seed {seed}"
     );
 
-    let minimized_replay = replay(seed, shrink.minimized.clone());
+    let minimized_replay = replay(seed, shrink.shrink.minimized.clone());
     assert!(
         still_fails(&minimized_replay),
         "minimized tape did not reproduce the failure at seed {seed}"
@@ -238,7 +285,8 @@ where
         seed,
         generated,
         minimized_replay,
-        shrink,
+        removed_labels: shrink.removed_labels,
+        shrink: shrink.shrink,
         minimized_json,
         minimized_html,
     }
@@ -295,6 +343,7 @@ pub fn run_experiment_case(case: &ExperimentCase) -> RecallResult {
             shrink_ratio: None,
             shrink_attempts: None,
             accepted_removals: None,
+            removed_labels: Vec::new(),
             artifact_json_bytes: None,
             artifact_html_bytes: None,
             replay_tape_input_len: None,
@@ -330,6 +379,7 @@ pub fn run_experiment_case(case: &ExperimentCase) -> RecallResult {
         shrink_ratio: None,
         shrink_attempts: None,
         accepted_removals: None,
+        removed_labels: Vec::new(),
         artifact_json_bytes: None,
         artifact_html_bytes: None,
         replay_tape_input_len: replayed.tape_input_len,
@@ -353,27 +403,34 @@ pub fn run_experiment_case(case: &ExperimentCase) -> RecallResult {
         return RecallResult::NotRecalled(report);
     }
 
-    let shrink = shrink_tape_with_config(
+    let labels: Vec<String> = generated
+        .tape_events
+        .iter()
+        .map(|event| event.label.as_str().to_string())
+        .collect();
+    let shrink = shrink_tape_label_aware_with_config(
         &generated.tape_log,
+        &labels,
         |candidate| {
             let candidate_report = (case.replay)(seed, candidate.to_vec());
             (case.oracle)(&candidate_report).as_ref() == Some(&signature)
         },
         case.budget.shrink,
     );
-    let minimized = (case.replay)(seed, shrink.minimized.clone());
+    let minimized = (case.replay)(seed, shrink.shrink.minimized.clone());
     let minimized_matched_signature = (case.oracle)(&minimized).as_ref() == Some(&signature);
     let minimized_json = run_report_to_json(&minimized);
     let minimized_html = timeline_html(&minimized);
 
-    report.minimized_tape_len = Some(shrink.minimized.len());
+    report.minimized_tape_len = Some(shrink.shrink.minimized.len());
     report.shrink_ratio = Some(if generated.tape_log.is_empty() {
         1.0
     } else {
-        shrink.minimized.len() as f64 / generated.tape_log.len() as f64
+        shrink.shrink.minimized.len() as f64 / generated.tape_log.len() as f64
     });
-    report.shrink_attempts = Some(shrink.attempts);
-    report.accepted_removals = Some(shrink.accepted_removals);
+    report.shrink_attempts = Some(shrink.shrink.attempts);
+    report.accepted_removals = Some(shrink.shrink.accepted_removals);
+    report.removed_labels = shrink.removed_labels;
     report.artifact_json_bytes = Some(minimized_json.len());
     report.artifact_html_bytes = Some(minimized_html.len());
     report.minimized_matched_signature = minimized_matched_signature;
@@ -389,6 +446,63 @@ pub fn run_experiment_case(case: &ExperimentCase) -> RecallResult {
 /// Run a fixed matrix of experiment cases in input order.
 pub fn run_experiment_matrix(cases: &[ExperimentCase]) -> Vec<RecallResult> {
     cases.iter().map(run_experiment_case).collect()
+}
+
+/// Run a named suite and evaluate each case according to its recall policy.
+pub fn run_experiment_suite(suite: ExperimentSuite) -> ExperimentSummary {
+    let results: Vec<RecallResult> = suite
+        .cases
+        .iter()
+        .map(|(case, _policy)| run_experiment_case(case))
+        .collect();
+    let policies: Vec<RecallPolicy> = suite.cases.iter().map(|(_, policy)| *policy).collect();
+    let matrix = summarize_experiment_matrix(&results);
+    let mut required_recalled = 0usize;
+    let mut required_not_recalled = 0usize;
+    let mut policy_failures = 0usize;
+
+    for (result, policy) in results.iter().zip(policies.iter()) {
+        match policy {
+            RecallPolicy::MustRecall => {
+                required_recalled += 1;
+                if !matches!(result, RecallResult::Recalled(_)) {
+                    policy_failures += 1;
+                }
+            }
+            RecallPolicy::MustNotRecall => {
+                required_not_recalled += 1;
+                if result.report().failures_observed != 0 {
+                    policy_failures += 1;
+                }
+            }
+            RecallPolicy::Informational => {}
+        }
+    }
+
+    let artifacts = results
+        .iter()
+        .map(|result| {
+            let report = result.report();
+            ExperimentArtifact {
+                case_name: report.name,
+                seed: report.first_failing_seed,
+                json_bytes: report.artifact_json_bytes,
+                html_bytes: report.artifact_html_bytes,
+                signature: report.failure_signature.clone(),
+            }
+        })
+        .collect();
+
+    ExperimentSummary {
+        name: suite.name,
+        total_cases: results.len(),
+        required_recalled,
+        required_not_recalled,
+        policy_failures,
+        matrix,
+        artifacts,
+        results,
+    }
 }
 
 /// Summarize experiment recall and shrink effectiveness in deterministic order.
@@ -464,7 +578,7 @@ pub fn assert_recall(case: &ExperimentCase) -> ExperimentReport {
 /// Export one experiment report as deterministic JSON.
 pub fn experiment_report_to_json(report: &ExperimentReport) -> String {
     format!(
-        "{{\"name\":\"{}\",\"seeds_attempted\":{},\"first_failing_seed\":{},\"failures_observed\":{},\"recall_rate\":{},\"recalled\":{},\"failure_signature\":{},\"original_tape_len\":{},\"minimized_tape_len\":{},\"shrink_ratio\":{},\"shrink_attempts\":{},\"accepted_removals\":{},\"artifact_json_bytes\":{},\"artifact_html_bytes\":{},\"replay_tape_input_len\":{},\"replay_tape_cursor\":{},\"replay_tape_consumed_all\":{},\"replay_tape_exhausted\":{},\"replay_trace_identical\":{},\"replay_history_identical\":{},\"replay_nemesis_identical\":{},\"replay_byte_identical\":{},\"replay_matched_signature\":{},\"minimized_matched_signature\":{}}}",
+        "{{\"name\":\"{}\",\"seeds_attempted\":{},\"first_failing_seed\":{},\"failures_observed\":{},\"recall_rate\":{},\"recalled\":{},\"failure_signature\":{},\"original_tape_len\":{},\"minimized_tape_len\":{},\"shrink_ratio\":{},\"shrink_attempts\":{},\"accepted_removals\":{},\"removed_labels\":{},\"artifact_json_bytes\":{},\"artifact_html_bytes\":{},\"replay_tape_input_len\":{},\"replay_tape_cursor\":{},\"replay_tape_consumed_all\":{},\"replay_tape_exhausted\":{},\"replay_trace_identical\":{},\"replay_history_identical\":{},\"replay_nemesis_identical\":{},\"replay_byte_identical\":{},\"replay_matched_signature\":{},\"minimized_matched_signature\":{}}}",
         escape_json(report.name),
         report.seeds_attempted,
         option_u64(report.first_failing_seed),
@@ -477,6 +591,7 @@ pub fn experiment_report_to_json(report: &ExperimentReport) -> String {
         option_f64(report.shrink_ratio),
         option_usize(report.shrink_attempts),
         option_usize(report.accepted_removals),
+        removed_labels_json(&report.removed_labels),
         option_usize(report.artifact_json_bytes),
         option_usize(report.artifact_html_bytes),
         option_usize(report.replay_tape_input_len),
@@ -489,6 +604,40 @@ pub fn experiment_report_to_json(report: &ExperimentReport) -> String {
         report.replay_byte_identical,
         report.replay_matched_signature,
         report.minimized_matched_signature,
+    )
+}
+
+/// Export a suite summary as deterministic JSON.
+pub fn experiment_summary_to_json(summary: &ExperimentSummary) -> String {
+    let artifacts: Vec<String> = summary
+        .artifacts
+        .iter()
+        .map(|artifact| {
+            format!(
+                "{{\"case_name\":\"{}\",\"seed\":{},\"json_bytes\":{},\"html_bytes\":{},\"signature\":{}}}",
+                escape_json(artifact.case_name),
+                option_u64(artifact.seed),
+                option_usize(artifact.json_bytes),
+                option_usize(artifact.html_bytes),
+                option_signature_json(artifact.signature.as_ref())
+            )
+        })
+        .collect();
+    let results: Vec<String> = summary
+        .results
+        .iter()
+        .map(|result| experiment_report_to_json(result.report()))
+        .collect();
+    format!(
+        "{{\"schema_version\":2,\"name\":\"{}\",\"total_cases\":{},\"required_recalled\":{},\"required_not_recalled\":{},\"policy_failures\":{},\"matrix\":{},\"artifacts\":[{}],\"results\":[{}]}}",
+        escape_json(summary.name),
+        summary.total_cases,
+        summary.required_recalled,
+        summary.required_not_recalled,
+        summary.policy_failures,
+        experiment_matrix_report_to_json(&summary.matrix),
+        artifacts.join(","),
+        results.join(",")
     )
 }
 
@@ -518,6 +667,20 @@ pub fn experiment_matrix_report_to_json(report: &ExperimentMatrixReport) -> Stri
         option_usize(report.max_minimized_tape_len),
         signatures.join(","),
     )
+}
+
+fn removed_labels_json(labels: &[RemovedLabel]) -> String {
+    let items: Vec<String> = labels
+        .iter()
+        .map(|label| {
+            format!(
+                "{{\"label\":\"{}\",\"count\":{}}}",
+                escape_json(&label.label),
+                label.count
+            )
+        })
+        .collect();
+    format!("[{}]", items.join(","))
 }
 
 fn option_signature_json(signature: Option<&FailureSignature>) -> String {
@@ -633,6 +796,10 @@ fn assert_reports_equal(seed: u64, label: &str, a: &RunReport, b: &RunReport) {
     assert_eq!(
         a.nemesis_trace, b.nemesis_trace,
         "{label} nemesis trace diverged for seed {seed}"
+    );
+    assert_eq!(
+        a.tape_events, b.tape_events,
+        "{label} tape events diverged for seed {seed}"
     );
 }
 

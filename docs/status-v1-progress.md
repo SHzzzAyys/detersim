@@ -72,10 +72,11 @@ cargo test -p detersim-sim --test mini_raft_recall
 
 ## Remaining v1.0 hardening
 
-- Replace label-only Mini-Raft bug recalls with checker-backed histories for
-  the variants where a small linearizable state machine can express the bug.
-- Add label-aware shrink prioritization using tape labels once labels are
-  exposed through the public shrink/testkit boundary.
-- Extend HTML artifact views with explicit conflict highlighting from
-  `CheckerStats`.
+- V2 adds checker-backed Mini-Raft stale-read history; remaining Mini-Raft
+  invariants still use stable labels when they are not naturally expressed as a
+  client-visible state machine history.
+- V2 exposes tape events and label-aware shrink prioritization through public
+  reports.
+- V2 upgrades JSON/HTML artifacts to schema version 2 while retaining
+  `RunReport` rendering.
 - Keep CI/nightly artifact upload wired to the same gates listed above.

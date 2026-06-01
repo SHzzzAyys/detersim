@@ -8,9 +8,16 @@
 pub struct ShrinkReport {
     pub original_len: usize,
     pub minimized: Vec<u64>,
+    pub kept_indices: Vec<usize>,
     pub attempts: usize,
     pub reproduced: bool,
     pub accepted_removals: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemovedLabel {
+    pub label: String,
+    pub count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -20,6 +27,12 @@ pub struct ShrinkEffectiveness {
     pub ratio: f64,
     pub attempts: usize,
     pub accepted_removals: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LabelAwareShrinkReport {
+    pub shrink: ShrinkReport,
+    pub removed_labels: Vec<RemovedLabel>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -50,6 +63,7 @@ impl SignaturePreservingShrink {
             ShrinkReport {
                 original_len: tape.len(),
                 minimized: tape.to_vec(),
+                kept_indices: (0..tape.len()).collect(),
                 attempts: 1,
                 reproduced: false,
                 accepted_removals: 0,
@@ -128,6 +142,7 @@ where
         return ShrinkReport {
             original_len: tape.len(),
             minimized: tape.to_vec(),
+            kept_indices: (0..tape.len()).collect(),
             attempts: 1,
             reproduced: false,
             accepted_removals: 0,
@@ -135,6 +150,7 @@ where
     }
 
     let mut attempts = 1usize;
+    let mut kept_indices: Vec<usize> = (0..tape.len()).collect();
     let mut current = tape.to_vec();
     let mut accepted_removals = 0usize;
     let mut chunk_len = current.len() / 2;
@@ -148,6 +164,7 @@ where
             attempts += 1;
             if still_fails(&candidate) {
                 current = candidate;
+                kept_indices.drain(idx..idx + chunk_len);
                 accepted_removals += 1;
                 accepted_this_round = true;
             } else {
@@ -166,6 +183,7 @@ where
         attempts += 1;
         if still_fails(&candidate) {
             current = candidate;
+            kept_indices.remove(idx);
             accepted_removals += 1;
         } else {
             idx += 1;
@@ -175,10 +193,106 @@ where
     ShrinkReport {
         original_len: tape.len(),
         minimized: current,
+        kept_indices,
         attempts,
         reproduced: true,
         accepted_removals,
     }
+}
+
+pub fn shrink_tape_label_aware_with_config<S, F>(
+    tape: &[u64],
+    labels: &[S],
+    mut still_fails: F,
+    config: ShrinkConfig,
+) -> LabelAwareShrinkReport
+where
+    S: AsRef<str>,
+    F: FnMut(&[u64]) -> bool,
+{
+    if labels.len() != tape.len() {
+        return LabelAwareShrinkReport {
+            shrink: shrink_tape_with_config(tape, still_fails, config),
+            removed_labels: Vec::new(),
+        };
+    }
+
+    let mut attempts = 0usize;
+    let mut current = tape.to_vec();
+    let mut kept_indices: Vec<usize> = (0..tape.len()).collect();
+    let mut accepted_removals = 0usize;
+    let mut reproduced = false;
+
+    attempts += 1;
+    if still_fails(&current) {
+        reproduced = true;
+        for tier in 0..=3 {
+            let mut pos = 0usize;
+            while pos < current.len() && attempts < config.max_attempts {
+                let original_idx = kept_indices[pos];
+                if label_tier(labels[original_idx].as_ref()) != tier {
+                    pos += 1;
+                    continue;
+                }
+                let mut candidate = current.clone();
+                candidate.remove(pos);
+                attempts += 1;
+                if still_fails(&candidate) {
+                    current = candidate;
+                    kept_indices.remove(pos);
+                    accepted_removals += 1;
+                } else {
+                    pos += 1;
+                }
+            }
+        }
+    }
+
+    let shrink = ShrinkReport {
+        original_len: tape.len(),
+        minimized: current,
+        kept_indices,
+        attempts,
+        reproduced,
+        accepted_removals,
+    };
+    let removed_labels = summarize_removed_labels(labels, &shrink.kept_indices);
+    LabelAwareShrinkReport {
+        shrink,
+        removed_labels,
+    }
+}
+
+fn label_tier(label: &str) -> usize {
+    match label {
+        "net-delay" | "extra-delay" | "jitter" => 0,
+        "drop-decision" | "duplicate-decision" => 1,
+        "partition" | "crash-point" | "restart" | "clock-skew" | "nemesis" => 2,
+        _ => 3,
+    }
+}
+
+fn summarize_removed_labels<S: AsRef<str>>(
+    labels: &[S],
+    kept_indices: &[usize],
+) -> Vec<RemovedLabel> {
+    let mut out = Vec::<RemovedLabel>::new();
+    for (idx, label) in labels.iter().enumerate() {
+        if kept_indices.contains(&idx) {
+            continue;
+        }
+        let label = label.as_ref();
+        if let Some(existing) = out.iter_mut().find(|entry| entry.label == label) {
+            existing.count += 1;
+        } else {
+            out.push(RemovedLabel {
+                label: label.to_string(),
+                count: 1,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.label.cmp(&b.label));
+    out
 }
 
 #[cfg(test)]
@@ -190,6 +304,7 @@ mod tests {
         let report = shrink_tape(&[1, 42, 2, 3], |tape| tape.contains(&42), 100);
         assert!(report.reproduced);
         assert_eq!(report.minimized, vec![42]);
+        assert_eq!(report.kept_indices, vec![1]);
         assert!(report.accepted_removals > 0);
     }
 
@@ -198,6 +313,7 @@ mod tests {
         let report = shrink_tape(&[1, 2, 3], |tape| tape.contains(&42), 100);
         assert!(!report.reproduced);
         assert_eq!(report.minimized, vec![1, 2, 3]);
+        assert_eq!(report.kept_indices, vec![0, 1, 2]);
         assert_eq!(report.accepted_removals, 0);
     }
 
@@ -213,6 +329,7 @@ mod tests {
             },
         );
         assert_eq!(report.minimized, vec![42]);
+        assert_eq!(report.kept_indices, vec![3]);
         assert!(report.attempts < tape.len() * 2);
     }
 
@@ -233,5 +350,35 @@ mod tests {
         assert!(outcome.signature_preserved);
         assert_eq!(outcome.report.minimized, vec![42]);
         assert!(outcome.effectiveness.ratio < 1.0);
+    }
+
+    #[test]
+    fn label_aware_shrink_removes_low_priority_draws_first() {
+        let labels = ["net-delay", "partition", "drop-decision", "net-delay"];
+        let report = shrink_tape_label_aware_with_config(
+            &[1, 42, 7, 8],
+            &labels,
+            |candidate| candidate.contains(&42),
+            ShrinkConfig {
+                max_attempts: 100,
+                min_chunk_len: 2,
+            },
+        );
+        assert!(report.shrink.reproduced);
+        assert_eq!(report.shrink.minimized, vec![42]);
+        assert_eq!(report.shrink.kept_indices, vec![1]);
+        assert_eq!(
+            report.removed_labels,
+            vec![
+                RemovedLabel {
+                    label: "drop-decision".to_string(),
+                    count: 1,
+                },
+                RemovedLabel {
+                    label: "net-delay".to_string(),
+                    count: 2,
+                }
+            ]
+        );
     }
 }

@@ -12,8 +12,11 @@ pub mod mini_raft;
 pub mod primary_backup_kv;
 
 pub use client::{
-    collect_protocol_events, run_mini_raft_client, run_primary_backup_kv_client, ClientOp,
+    collect_protocol_events, run_mini_raft_client, run_mini_raft_kv_client,
+    run_primary_backup_kv_client, ClientOp,
 };
 pub use history::{append_log_history, single_key_kv_history, RecordedOp};
-pub use mini_raft::{run_mini_raft, MiniRaftConfig, RaftBugVariant, RAFT_OBSERVER_NODE};
+pub use mini_raft::{
+    run_mini_raft, MiniRaftConfig, RaftBugVariant, RaftInvariant, RAFT_OBSERVER_NODE,
+};
 pub use primary_backup_kv::{run_primary_backup_kv, KvBugVariant, KvConfig};

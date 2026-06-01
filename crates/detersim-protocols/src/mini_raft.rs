@@ -30,6 +30,28 @@ pub enum RaftBugVariant {
     OldTermLeaderCommitsEntry,
 }
 
+/// Protocol-internal safety invariants exposed as stable labels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RaftInvariant {
+    SingleLeaderPerTerm,
+    CommittedEntriesNotLost,
+    AppliedIndexNotPastCommit,
+    VotedOncePerTerm,
+}
+
+impl RaftInvariant {
+    pub fn as_label(self) -> &'static str {
+        match self {
+            RaftInvariant::SingleLeaderPerTerm => "raft-invariant:single-leader-per-term",
+            RaftInvariant::CommittedEntriesNotLost => "raft-invariant:committed-entries-not-lost",
+            RaftInvariant::AppliedIndexNotPastCommit => {
+                "raft-invariant:applied-index-not-past-commit"
+            }
+            RaftInvariant::VotedOncePerTerm => "raft-invariant:voted-once-per-term",
+        }
+    }
+}
+
 /// Configuration for the Mini-Raft reference SUT.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MiniRaftConfig {
@@ -94,12 +116,15 @@ async fn run_node_zero<E: Env>(env: E, config: MiniRaftConfig) {
         }
         RaftBugVariant::DualLeaderUnderPartition => {
             notify_observer(&env, "leader:0").await;
+            notify_observer(&env, RaftInvariant::SingleLeaderPerTerm.as_label()).await;
         }
         RaftBugVariant::ApplyBeforeCommit => {
             notify_observer(&env, "raft-bug:apply-before-commit").await;
+            notify_observer(&env, RaftInvariant::AppliedIndexNotPastCommit.as_label()).await;
         }
         RaftBugVariant::OldTermLeaderCommitsEntry => {
             notify_observer(&env, "raft-bug:old-term-leader-commits-entry").await;
+            notify_observer(&env, RaftInvariant::CommittedEntriesNotLost.as_label()).await;
         }
         RaftBugVariant::FollowerStaleRead => run_leader_for_stale_read(env).await,
         RaftBugVariant::DuplicateClientRequest => run_duplicate_request_leader(env).await,
@@ -117,6 +142,7 @@ async fn run_node_one<E: Env>(env: E, config: MiniRaftConfig) {
         }
         RaftBugVariant::DualLeaderUnderPartition => {
             notify_observer(&env, "leader:1").await;
+            notify_observer(&env, RaftInvariant::SingleLeaderPerTerm.as_label()).await;
         }
         RaftBugVariant::FollowerStaleRead => {
             let (client, msg) = env.net().recv().await;

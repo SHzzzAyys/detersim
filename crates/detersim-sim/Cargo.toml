@@ -3,6 +3,8 @@ name = "detersim-sim"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
 description = "Deterministic single-threaded executor, simulated network/storage, and entropy tape for detersim."
 
 [dependencies]
@@ -11,4 +13,5 @@ detersim-nemesis = { path = "../detersim-nemesis" }
 # Intentionally zero third-party dependencies in the simulation core.
 
 [dev-dependencies]
+detersim-check = { path = "../detersim-check" }
 detersim-protocols = { path = "../detersim-protocols" }
