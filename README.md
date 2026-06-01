@@ -488,6 +488,14 @@ Manual full soak is available through `.github/workflows/full-soak.yml`.
   interpretation.
 - [`docs/v3-artifact-schema.md`](docs/v3-artifact-schema.md): schema-v3 debug
   artifacts.
+- [`docs/status-v3.1-plan.md`](docs/status-v3.1-plan.md): V3.1 hardening
+  status and gates.
+- [`docs/mini-raft-checker-backed.md`](docs/mini-raft-checker-backed.md):
+  Mini-Raft checker-backed and invariant-backed oracle split.
+- [`docs/search-benchmark-results.md`](docs/search-benchmark-results.md):
+  search comparison evidence and commands.
+- [`docs/artifact-causal-graph.md`](docs/artifact-causal-graph.md): causal
+  graph schema used by V3 artifacts.
 - [`docs/public-api-stability.md`](docs/public-api-stability.md): beta API
   stability rules.
 - [`docs/versioning.md`](docs/versioning.md): release, crate, and artifact

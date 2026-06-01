@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use detersim_check::models::SingleKeyKv;
 use detersim_check::{check_linearizable_with_budget, CheckBudget};
-use detersim_core::{ClockExt, Env, Network, SimTime};
+use detersim_core::{ClockExt, Env, Network, SimTime, Storage};
 use detersim_nemesis::NemesisAction;
 use detersim_net::{connect_pair, ConnectionId, StreamFault};
 use detersim_protocols::{
@@ -14,12 +14,15 @@ use detersim_testkit::{
     experiment_report_to_json, linearizability_signature, run_experiment_case, ExperimentBudget,
     ExperimentCase, FailureSignature,
 };
-use detersim_viz::{debug_artifact_v3_html, debug_artifact_v3_to_json, DebugArtifactV3};
+use detersim_viz::{
+    debug_artifact_v3_html, debug_artifact_v3_to_json, CausalGraph, DebugArtifactV3,
+};
 
 fn main() {
     emit("missing-message", missing_message_artifact());
     emit("replicated-kv-stale-read", kv_stale_read_artifact());
     emit("mini-raft-stale-read", mini_raft_stale_read_artifact());
+    emit("storage-bitrot", storage_bitrot_artifact());
     emit("stream-transcript", stream_transcript_artifact());
 }
 
@@ -32,6 +35,7 @@ fn emit(name: &str, artifact: DebugArtifactV3) {
 
 fn missing_message_artifact() -> DebugArtifactV3 {
     let run = missing_message_world(0);
+    let causal_graph = CausalGraph::from_run(&run).to_json();
     DebugArtifactV3 {
         title: "missing-message".to_string(),
         run,
@@ -58,15 +62,14 @@ fn missing_message_artifact() -> DebugArtifactV3 {
             "{\"type\":\"InvariantViolated\",\"name\":\"missing-message\"}".to_string(),
         ),
         coverage_json: None,
-        causal_graph_json: Some(
-            "{\"nodes\":[\"send\",\"drop\",\"timeout\"],\"edges\":[[\"send\",\"drop\"],[\"drop\",\"timeout\"]]}".to_string(),
-        ),
+        causal_graph_json: Some(causal_graph),
         environment_json: Some("{\"example\":\"v3_artifacts\"}".to_string()),
     }
 }
 
 fn kv_stale_read_artifact() -> DebugArtifactV3 {
     let run = kv_read_from_stale_follower(0);
+    let causal_graph = CausalGraph::from_run(&run).to_json();
     let check = check_linearizable_with_budget(
         &SingleKeyKv::new(None),
         &single_key_kv_history(&run.history),
@@ -82,15 +85,14 @@ fn kv_stale_read_artifact() -> DebugArtifactV3 {
         failure_signature_json: linearizability_signature("single-key-kv", &check)
             .map(|_| "{\"type\":\"NotLinearizable\",\"model\":\"single-key-kv\"}".to_string()),
         coverage_json: None,
-        causal_graph_json: Some(
-            "{\"nodes\":[\"write\",\"stale-read\",\"checker\"],\"edges\":[[\"write\",\"stale-read\"],[\"stale-read\",\"checker\"]]}".to_string(),
-        ),
+        causal_graph_json: Some(causal_graph),
         environment_json: Some("{\"example\":\"v3_artifacts\"}".to_string()),
     }
 }
 
 fn mini_raft_stale_read_artifact() -> DebugArtifactV3 {
     let run = mini_raft_stale_read(0);
+    let causal_graph = CausalGraph::from_run(&run).to_json();
     let check = check_linearizable_with_budget(
         &SingleKeyKv::new(None),
         &single_key_kv_history(&run.history),
@@ -107,17 +109,35 @@ fn mini_raft_stale_read_artifact() -> DebugArtifactV3 {
             |_| "{\"type\":\"NotLinearizable\",\"model\":\"mini-raft-single-key-kv\"}".to_string(),
         ),
         coverage_json: None,
-        causal_graph_json: Some(
-            "{\"nodes\":[\"append\",\"follower-read\",\"checker\"],\"edges\":[[\"append\",\"follower-read\"],[\"follower-read\",\"checker\"]]}".to_string(),
+        causal_graph_json: Some(causal_graph),
+        environment_json: Some("{\"example\":\"v3_artifacts\"}".to_string()),
+    }
+}
+
+fn storage_bitrot_artifact() -> DebugArtifactV3 {
+    let run = storage_bitrot(0);
+    DebugArtifactV3 {
+        title: "storage bitrot".to_string(),
+        causal_graph_json: Some(CausalGraph::from_run(&run).to_json()),
+        run,
+        experiment_json: None,
+        search_json: None,
+        checker_json: None,
+        shrink_json: Some("{\"kind\":\"storage-fault\"}".to_string()),
+        failure_signature_json: Some(
+            "{\"type\":\"StorageCorruption\",\"label\":\"bitrot\"}".to_string(),
         ),
+        coverage_json: None,
         environment_json: Some("{\"example\":\"v3_artifacts\"}".to_string()),
     }
 }
 
 fn stream_transcript_artifact() -> DebugArtifactV3 {
+    let run = stream_transcript_report(0);
     DebugArtifactV3 {
         title: "stream transcript".to_string(),
-        run: stream_transcript_report(0),
+        causal_graph_json: Some(CausalGraph::from_run(&run).to_json()),
+        run,
         experiment_json: None,
         search_json: None,
         checker_json: None,
@@ -126,9 +146,6 @@ fn stream_transcript_artifact() -> DebugArtifactV3 {
             "{\"type\":\"InvariantViolated\",\"name\":\"stream-transcript\"}".to_string(),
         ),
         coverage_json: Some("[\"stream:deliver\",\"stream:duplicate\"]".to_string()),
-        causal_graph_json: Some(
-            "{\"nodes\":[\"enqueue\",\"duplicate\",\"deliver\"],\"edges\":[[\"enqueue\",\"deliver\"],[\"duplicate\",\"deliver\"]]}".to_string(),
-        ),
         environment_json: Some("{\"example\":\"v3_artifacts\"}".to_string()),
     }
 }
@@ -197,6 +214,17 @@ fn mini_raft_stale_read(seed: u64) -> RunReport {
         for op in run_mini_raft_kv_client(env.clone(), config).await {
             env.record(op.to_history_line());
         }
+    });
+    world.run()
+}
+
+fn storage_bitrot(seed: u64) -> RunReport {
+    let mut world = World::with_config(seed, config());
+    world.add_node(0, |env: SimEnv| async move {
+        let storage = env.storage();
+        let _ = storage.write_at(0, b"ok").await;
+        let _ = storage.flush().await;
+        env.record("storage-corruption:bitrot");
     });
     world.run()
 }

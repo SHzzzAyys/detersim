@@ -17,6 +17,7 @@ pub use client::{
 };
 pub use history::{append_log_history, single_key_kv_history, RecordedOp};
 pub use mini_raft::{
-    run_mini_raft, MiniRaftConfig, RaftBugVariant, RaftInvariant, RAFT_OBSERVER_NODE,
+    run_mini_raft, MiniRaftConfig, RaftBugVariant, RaftClientHistory, RaftInvariant,
+    RaftInvariantEvent, RaftObservation, RAFT_OBSERVER_NODE,
 };
 pub use primary_backup_kv::{run_primary_backup_kv, KvBugVariant, KvConfig};

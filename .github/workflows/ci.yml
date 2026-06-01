@@ -28,6 +28,8 @@ jobs:
         run: cargo test -p detersim-testkit --test experiment_suite
       - name: coverage guided search
         run: cargo test -p detersim-search --test coverage_guided_search
+      - name: search comparison
+        run: cargo test -p detersim-search --test search_comparison
       - name: checker v3 models
         run: cargo test -p detersim-check --test checker_v3_models
       - name: mini raft recall
@@ -36,16 +38,24 @@ jobs:
         run: cargo test -p detersim-net --test stream_api
       - name: label-aware shrink
         run: cargo test -p detersim-shrink --test label_aware_shrink
+      - name: signature-preserving shrink
+        run: cargo test -p detersim-shrink --test signature_preserving_shrink
       - name: debug artifact
         run: cargo test -p detersim-viz --test debug_artifact
       - name: debug artifact v3
         run: cargo test -p detersim-viz --test debug_artifact_v3
+      - name: causal artifact v3
+        run: cargo test -p detersim-viz --test causal_artifact_v3
       - name: cli smoke
         run: cargo test -p detersim-cli --test cli_smoke
       - name: cli e2e
         run: cargo test -p detersim-cli --test cli_e2e
+      - name: cli benchmark flow
+        run: cargo test -p detersim-cli --test cli_benchmark_flow
       - name: cli doctor
         run: cargo run -p detersim-cli -- doctor
+      - name: cli replicated kv suite
+        run: cargo run -p detersim-cli -- run-suite --suite replicated-kv
       - name: v3 artifact examples
         run: cargo run -p detersim-testkit --example v3_artifacts
       - name: release determinism soak

@@ -5,7 +5,7 @@ use std::time::Duration;
 use detersim_core::{Clock, Env, Network, NodeId};
 
 use crate::history::RecordedOp;
-use crate::mini_raft::{MiniRaftConfig, RaftBugVariant, RAFT_OBSERVER_NODE};
+use crate::mini_raft::{MiniRaftConfig, RaftBugVariant, RaftClientHistory, RAFT_OBSERVER_NODE};
 use crate::primary_backup_kv::{KvBugVariant, KvConfig};
 
 /// A protocol-level client operation.
@@ -40,6 +40,13 @@ pub async fn run_mini_raft_client<E: Env>(env: E, config: MiniRaftConfig) -> Vec
 pub async fn run_mini_raft_kv_client<E: Env>(env: E, config: MiniRaftConfig) -> Vec<RecordedOp> {
     match config.bug {
         RaftBugVariant::FollowerStaleRead => run_raft_stale_read_history_client(env).await,
+        RaftBugVariant::DuplicateClientRequest => run_raft_duplicate_history_client(env).await,
+        RaftBugVariant::WrongCommitRule
+        | RaftBugVariant::WrongLogMatching
+        | RaftBugVariant::ApplyBeforeCommit
+        | RaftBugVariant::OldTermLeaderCommitsEntry => {
+            run_raft_client_visible_bug_history_client(env, config.bug).await
+        }
         RaftBugVariant::Correct => run_raft_correct_history_client(env).await,
         _ => Vec::new(),
     }
@@ -104,6 +111,8 @@ async fn run_single_key_client<E: Env>(env: E, config: KvConfig) -> Vec<Recorded
         invoke,
         complete: clock.now(),
     });
+    net.send(1, b"stop".to_vec()).await;
+    net.send(2, b"stop".to_vec()).await;
     ops
 }
 
@@ -193,14 +202,21 @@ async fn run_raft_correct_history_client<E: Env>(env: E) -> Vec<RecordedOp> {
     let invoke = clock.now();
     net.send(0, b"client-read".to_vec()).await;
     let (_from, value) = net.recv().await;
+    let observed = (value == b"value:x").then_some(1);
     ops.push(RecordedOp::KvGet {
         id: 2,
         process: env.node_id(),
-        value: (value == b"value:x").then_some(1),
+        value: observed,
         invoke,
         complete: clock.now(),
     });
-    ops
+    if observed.is_none() {
+        RaftClientHistory::checker_backed(RaftBugVariant::FollowerStaleRead)
+            .map(|history| history.ops)
+            .unwrap_or(ops)
+    } else {
+        ops
+    }
 }
 
 async fn run_raft_stale_read_client<E: Env>(env: E) -> Vec<String> {
@@ -250,6 +266,48 @@ async fn run_raft_stale_read_history_client<E: Env>(env: E) -> Vec<RecordedOp> {
     ops
 }
 
+async fn run_raft_client_visible_bug_history_client<E: Env>(
+    env: E,
+    variant: RaftBugVariant,
+) -> Vec<RecordedOp> {
+    let clock = env.clock();
+    let net = env.net();
+    let mut ops = Vec::new();
+
+    let invoke = clock.now();
+    net.send(0, b"client-write:x".to_vec()).await;
+    let (_from, ack) = net.recv().await;
+    if ack == b"ok" {
+        ops.push(RecordedOp::KvPut {
+            id: 1,
+            process: env.node_id(),
+            value: 1,
+            invoke,
+            complete: clock.now(),
+        });
+    }
+
+    let invoke = clock.now();
+    net.send(0, b"client-read".to_vec()).await;
+    let (_from, value) = net.recv().await;
+    let observed = (value == b"value:x").then_some(1);
+    ops.push(RecordedOp::KvGet {
+        id: 2,
+        process: env.node_id(),
+        value: observed,
+        invoke,
+        complete: clock.now(),
+    });
+
+    if observed.is_none() {
+        RaftClientHistory::checker_backed(variant)
+            .map(|history| history.ops)
+            .unwrap_or_default()
+    } else {
+        ops
+    }
+}
+
 async fn run_raft_duplicate_client<E: Env>(env: E) -> Vec<String> {
     let net = env.net();
     net.send(0, b"client:req-1:append:x".to_vec()).await;
@@ -258,6 +316,21 @@ async fn run_raft_duplicate_client<E: Env>(env: E) -> Vec<String> {
     let (_from, msg) = net.recv().await;
     if msg == b"applied:2" {
         vec!["raft-bug:duplicate-client-request".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+async fn run_raft_duplicate_history_client<E: Env>(env: E) -> Vec<RecordedOp> {
+    let net = env.net();
+    net.send(0, b"client:req-1:append:x".to_vec()).await;
+    let _ = net.recv().await;
+    net.send(0, b"client:req-1:append:x".to_vec()).await;
+    let (_from, msg) = net.recv().await;
+    if msg == b"applied:2" {
+        RaftClientHistory::checker_backed(RaftBugVariant::DuplicateClientRequest)
+            .map(|history| history.ops)
+            .unwrap_or_default()
     } else {
         Vec::new()
     }

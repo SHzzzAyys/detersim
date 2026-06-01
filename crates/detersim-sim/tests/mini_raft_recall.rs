@@ -1,10 +1,11 @@
-use detersim_check::models::SingleKeyKv;
+use detersim_check::models::{AppendOnlyLog, SingleKeyKv};
 use detersim_check::{check_linearizable_with_budget, CheckBudget, LinearizabilityResult};
 use detersim_core::SimTime;
 use detersim_nemesis::NemesisAction;
 use detersim_protocols::{
-    collect_protocol_events, run_mini_raft, run_mini_raft_client, run_mini_raft_kv_client,
-    single_key_kv_history, MiniRaftConfig, RaftBugVariant, RaftInvariant, RAFT_OBSERVER_NODE,
+    append_log_history, collect_protocol_events, run_mini_raft, run_mini_raft_kv_client,
+    single_key_kv_history, MiniRaftConfig, RaftBugVariant, RaftClientHistory, RaftInvariant,
+    RAFT_OBSERVER_NODE,
 };
 use detersim_sim::{RunReport, SimEnv, World, WorldConfig};
 
@@ -42,21 +43,6 @@ fn mini_raft_reference_is_stable_under_seed_sweep() {
 }
 
 #[test]
-fn mini_raft_stale_read_is_checker_backed() {
-    for seed in 0..seed_count(100) {
-        let report = follower_stale_read_world(seed);
-        assert!(matches!(
-            check_linearizable_with_budget(
-                &SingleKeyKv::new(None),
-                &single_key_kv_history(&report.history),
-                CheckBudget { max_steps: 10_000 }
-            ),
-            LinearizabilityResult::NotLinearizable { .. }
-        ));
-    }
-}
-
-#[test]
 fn mini_raft_persists_term_vote_and_log_across_restart() {
     for seed in 0..seed_count(100) {
         let report = mini_raft_persistence_world(seed, RaftBugVariant::Correct);
@@ -71,7 +57,34 @@ fn mini_raft_persists_term_vote_and_log_across_restart() {
 }
 
 #[test]
-fn mini_raft_plant_a_bug_variants_are_recalled() {
+fn mini_raft_checker_backed_bug_zoo_is_recalled() {
+    let variants = [
+        RaftBugVariant::WrongCommitRule,
+        RaftBugVariant::WrongLogMatching,
+        RaftBugVariant::FollowerStaleRead,
+        RaftBugVariant::DuplicateClientRequest,
+        RaftBugVariant::ApplyBeforeCommit,
+        RaftBugVariant::OldTermLeaderCommitsEntry,
+    ];
+
+    for variant in variants {
+        assert!(
+            RaftClientHistory::checker_backed(variant).is_some(),
+            "{variant:?} is missing a public checker-backed history description"
+        );
+        for seed in 0..seed_count(100) {
+            let report = mini_raft_client_bug_world(seed, variant);
+            assert!(
+                mini_raft_history_is_not_linearizable(&report),
+                "{variant:?} did not produce a checker-backed failure at seed {seed}: {:?}",
+                report.history
+            );
+        }
+    }
+}
+
+#[test]
+fn mini_raft_invariant_bug_zoo_is_recalled() {
     let variants: &[(&str, fn(u64) -> RunReport, &[&str])] = &[
         (
             "term-not-persisted",
@@ -84,48 +97,12 @@ fn mini_raft_plant_a_bug_variants_are_recalled() {
             &["raft-bug:vote-not-persisted"],
         ),
         (
-            "wrong-commit-rule",
-            wrong_commit_rule_world,
-            &["raft-bug:wrong-commit-rule"],
-        ),
-        (
-            "wrong-log-matching",
-            wrong_log_matching_world,
-            &["raft-bug:wrong-log-matching"],
-        ),
-        (
             "dual-leader",
             dual_leader_world,
             &[
                 "leader:0",
                 "leader:1",
                 RaftInvariant::SingleLeaderPerTerm.as_label(),
-            ],
-        ),
-        (
-            "follower-stale-read",
-            follower_stale_read_world,
-            &["raft-bug:follower-stale-read"],
-        ),
-        (
-            "duplicate-client-request",
-            duplicate_client_request_world,
-            &["raft-bug:duplicate-client-request"],
-        ),
-        (
-            "apply-before-commit",
-            apply_before_commit_world,
-            &[
-                "raft-bug:apply-before-commit",
-                RaftInvariant::AppliedIndexNotPastCommit.as_label(),
-            ],
-        ),
-        (
-            "old-term-leader-commits-entry",
-            old_term_leader_commits_entry_world,
-            &[
-                "raft-bug:old-term-leader-commits-entry",
-                RaftInvariant::CommittedEntriesNotLost.as_label(),
             ],
         ),
     ];
@@ -181,32 +158,8 @@ fn vote_not_persisted_world(seed: u64) -> RunReport {
     mini_raft_persistence_world(seed, RaftBugVariant::VoteNotPersisted)
 }
 
-fn wrong_commit_rule_world(seed: u64) -> RunReport {
-    mini_raft_observed_world(seed, RaftBugVariant::WrongCommitRule, 1)
-}
-
-fn wrong_log_matching_world(seed: u64) -> RunReport {
-    mini_raft_observed_world(seed, RaftBugVariant::WrongLogMatching, 1)
-}
-
 fn dual_leader_world(seed: u64) -> RunReport {
     mini_raft_observed_world(seed, RaftBugVariant::DualLeaderUnderPartition, 4)
-}
-
-fn apply_before_commit_world(seed: u64) -> RunReport {
-    mini_raft_observed_world(seed, RaftBugVariant::ApplyBeforeCommit, 2)
-}
-
-fn old_term_leader_commits_entry_world(seed: u64) -> RunReport {
-    mini_raft_observed_world(seed, RaftBugVariant::OldTermLeaderCommitsEntry, 2)
-}
-
-fn follower_stale_read_world(seed: u64) -> RunReport {
-    mini_raft_client_bug_world(seed, RaftBugVariant::FollowerStaleRead)
-}
-
-fn duplicate_client_request_world(seed: u64) -> RunReport {
-    mini_raft_client_bug_world(seed, RaftBugVariant::DuplicateClientRequest)
 }
 
 fn mini_raft_observed_world(seed: u64, variant: RaftBugVariant, expected: usize) -> RunReport {
@@ -222,27 +175,34 @@ fn mini_raft_client_bug_world(seed: u64, variant: RaftBugVariant) -> RunReport {
     let raft_config = MiniRaftConfig::with_bug(variant);
     world.add_nodes(3, move |env: SimEnv| run_mini_raft(env, raft_config));
     world.add_node(4, move |env: SimEnv| async move {
-        if matches!(raft_config.bug, RaftBugVariant::FollowerStaleRead) {
-            let ops = run_mini_raft_kv_client(env.clone(), raft_config).await;
-            let stale_read = ops.iter().any(|op| {
-                matches!(
-                    op,
-                    detersim_protocols::RecordedOp::KvGet { value: None, .. }
-                )
-            });
-            for op in ops {
-                env.record(op.to_history_line());
-            }
-            if stale_read {
-                env.record("raft-bug:follower-stale-read");
-            }
-        } else {
-            for label in run_mini_raft_client(env.clone(), raft_config).await {
-                env.record(label);
-            }
+        for op in run_mini_raft_kv_client(env.clone(), raft_config).await {
+            env.record(op.to_history_line());
         }
     });
     world.run()
+}
+
+fn mini_raft_history_is_not_linearizable(report: &RunReport) -> bool {
+    let log_history = append_log_history(&report.history);
+    if !log_history.is_empty() {
+        return matches!(
+            check_linearizable_with_budget(
+                &AppendOnlyLog::new(Vec::<String>::new()),
+                &log_history,
+                CheckBudget { max_steps: 10_000 }
+            ),
+            LinearizabilityResult::NotLinearizable { .. }
+        );
+    }
+
+    matches!(
+        check_linearizable_with_budget(
+            &SingleKeyKv::new(None),
+            &single_key_kv_history(&report.history),
+            CheckBudget { max_steps: 10_000 }
+        ),
+        LinearizabilityResult::NotLinearizable { .. }
+    )
 }
 
 fn add_observer(world: &mut World, expected: usize) {

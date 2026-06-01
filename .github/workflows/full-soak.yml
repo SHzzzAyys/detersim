@@ -22,7 +22,8 @@ jobs:
         run: cargo test --release -p detersim-sim --test mini_raft_recall
       - name: coverage-guided search smoke
         run: |
-          cargo run -p detersim-cli -- search --suite smoke --budget 5000 --strategy coverage-guided target/detersim-artifacts/search.json
+          cargo run -p detersim-cli -- search --suite replicated-kv --budget 5000 --strategy coverage-guided target/detersim-artifacts/search.json
+          cargo run -p detersim-cli -- search --suite replicated-kv --budget 5000 --compare target/detersim-artifacts/search-comparison.json
           cargo run -p detersim-cli -- render --examples target/detersim-artifacts/v3
       - uses: actions/upload-artifact@v4
         if: always()
