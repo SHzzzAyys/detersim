@@ -45,6 +45,8 @@ crates/
   detersim-shrink/    Budgeted chunk + single-draw entropy-tape minimization. Candidate tapes are accepted only if they still reproduce.
   detersim-viz/       Local JSON + self-contained HTML trace export.
   detersim-testkit/   User-facing assertions, experiment reports, failure signatures, plant-a-bug recall, and shrink/debug flows.
+  detersim-search/    Coverage/signal guided seed search over public experiment cases.
+  detersim-net/       Pure deterministic stream helpers for socket-shaped SUTs.
   detersim-cli/       Optional local CLI for running suites and writing artifacts. This crate may use local file I/O.
   detersim-real/      Planned: tokio + std production impls of the same traits.
 examples/             pingpong, toy_raft, WAL and plant-a-bug scenarios used by tests as SUTs.
@@ -55,6 +57,8 @@ Dependency direction: `core` depends on nothing internal. `nemesis` depends on `
 `protocols` depends only on `core` + `check`. `sim` depends on `core` + `nemesis`.
 `viz` depends on `sim`. `testkit` may depend on
 `sim`, `check`, `nemesis`, `protocols`, `shrink`, and `viz` because it is the user harness layer.
+`search` sits above `sim` and `testkit`; it must not feed dependencies back
+into deterministic runtime crates. `net` depends only on `core`.
 `cli` sits above the harness and may write local artifacts; it must not feed
 dependencies back into deterministic crates.
 `check` and `shrink` stay independent of `sim`. Planned `real` must not feed back into `core` or `sim`.

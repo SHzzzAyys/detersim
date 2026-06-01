@@ -1,0 +1,31 @@
+name: full-soak
+
+on:
+  workflow_dispatch:
+
+jobs:
+  full-soak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: full workspace gates
+        run: |
+          cargo fmt --all --check
+          cargo build --workspace
+          cargo test --workspace
+          cargo clippy --workspace -- -D warnings
+          bash scripts/lint_determinism.sh
+      - name: 50k mini-raft soak
+        env:
+          DST_SEED_COUNT: "50000"
+        run: cargo test --release -p detersim-sim --test mini_raft_recall
+      - name: coverage-guided search smoke
+        run: |
+          cargo run -p detersim-cli -- search --suite replicated-kv --budget 5000 --strategy coverage-guided target/detersim-artifacts/search.json
+          cargo run -p detersim-cli -- render --examples target/detersim-artifacts/v3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: detersim-full-soak-artifacts
+          path: target/detersim-artifacts

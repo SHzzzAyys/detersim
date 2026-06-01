@@ -812,6 +812,7 @@ pub struct RunReport {
     pub trace: Vec<String>,
     pub nemesis_trace: Vec<String>,
     pub history: Vec<String>,
+    pub coverage_signals: Vec<String>,
     pub tape_log: Vec<u64>,
     pub tape_events: Vec<TapeEvent>,
     pub tape_replaying: bool,
@@ -1078,12 +1079,14 @@ impl World {
         let aborted = g.dispatched >= g.config.max_events || g.now.as_nanos() > g.config.horizon_ns;
         let tape_log = g.tape.log().to_vec();
         let tape_events = g.tape.events().to_vec();
+        let coverage_signals = semantic_coverage(&g);
         let tape: TapeDiagnostics = g.tape.diagnostics();
         RunReport {
             seed: g.seed,
             trace: g.trace.clone(),
             nemesis_trace: g.nemesis_trace.clone(),
             history: g.history.clone(),
+            coverage_signals,
             dispatched: g.dispatched,
             aborted,
             deadlocked,
@@ -1098,6 +1101,68 @@ impl World {
             tape_exhausted: tape.exhausted,
         }
     }
+}
+
+fn semantic_coverage(g: &Inner) -> Vec<String> {
+    let mut signals = BTreeSet::new();
+    signals.insert(
+        if g.dispatched >= g.config.max_events || g.now.as_nanos() > g.config.horizon_ns {
+            "outcome:aborted".to_string()
+        } else if g.queue.is_empty() && !g.tasks.is_empty() {
+            "outcome:deadlocked".to_string()
+        } else {
+            "outcome:quiesced".to_string()
+        },
+    );
+
+    for event in g.tape.events() {
+        signals.insert(format!("tape:{}", event.label.as_str()));
+    }
+    for entry in &g.nemesis_trace {
+        if let Some(kind) = entry
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .find(|part| !part.is_empty())
+        {
+            signals.insert(format!("nemesis:{kind}"));
+        }
+    }
+    for entry in &g.history {
+        if let Some((kind, _rest)) = entry.split_once(':') {
+            signals.insert(format!("history:{kind}"));
+        } else {
+            signals.insert(format!("history:{entry}"));
+        }
+    }
+    for line in &g.trace {
+        if let Some(edge) = trace_edge(line) {
+            signals.insert(format!("message-edge:{edge}"));
+        }
+        if let Some(drop) = trace_drop_kind(line) {
+            signals.insert(format!("network:{drop}"));
+        }
+        if line.contains("timer fire=") {
+            signals.insert("timer:fire".to_string());
+        }
+        if line.contains("poll task=") {
+            signals.insert("task:poll".to_string());
+        }
+        if line.contains(" nemesis ") {
+            signals.insert("nemesis:event".to_string());
+        }
+    }
+
+    signals.into_iter().collect()
+}
+
+fn trace_edge(line: &str) -> Option<&str> {
+    let (_before, after) = line.split_once("deliver ")?;
+    after.split_whitespace().next()
+}
+
+fn trace_drop_kind(line: &str) -> Option<&str> {
+    let (_before, after) = line.split_once("] ")?;
+    let kind = after.split_whitespace().next()?;
+    kind.strip_prefix("drop-")
 }
 
 fn format_restart_outcome(outcome: RestartOutcome) -> String {

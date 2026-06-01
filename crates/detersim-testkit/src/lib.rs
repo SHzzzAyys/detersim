@@ -798,6 +798,10 @@ fn assert_reports_equal(seed: u64, label: &str, a: &RunReport, b: &RunReport) {
         "{label} nemesis trace diverged for seed {seed}"
     );
     assert_eq!(
+        a.coverage_signals, b.coverage_signals,
+        "{label} coverage signals diverged for seed {seed}"
+    );
+    assert_eq!(
         a.tape_events, b.tape_events,
         "{label} tape events diverged for seed {seed}"
     );

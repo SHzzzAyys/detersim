@@ -31,6 +31,12 @@ cargo test -p detersim-sim --test storage_faults
 cargo test -p detersim-sim --test mini_raft_recall
 cargo test -p detersim-shrink --test label_aware_shrink
 cargo test -p detersim-viz --test debug_artifact
+cargo test -p detersim-search --test coverage_guided_search
+cargo test -p detersim-check --test checker_v3_models
+cargo test -p detersim-net --test stream_api
+cargo test -p detersim-viz --test debug_artifact_v3
+cargo test -p detersim-cli --test cli_smoke
+cargo run -p detersim-cli -- doctor
 ```
 
 ## Artifact check
@@ -44,6 +50,20 @@ cargo test -p detersim-viz --test debug_artifact
 ```powershell
 git tag -a v2.0.0-alpha.1 -m "DeterSim v2.0.0-alpha.1"
 git push origin v2.0.0-alpha.1
+```
+
+- V3 beta tag command:
+
+```powershell
+git tag -a v3.0.0-beta.1 -m "DeterSim v3.0.0-beta.1"
+git push origin v3.0.0-beta.1
+```
+
+- Crates.io dry run before any publish:
+
+```powershell
+cargo package --workspace --allow-dirty
+cargo publish --dry-run -p detersim-core
 ```
 
 ## Stop rules

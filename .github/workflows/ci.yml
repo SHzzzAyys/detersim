@@ -24,12 +24,24 @@ jobs:
         run: cargo test -p detersim-testkit --test replicated_kv
       - name: experiment suite
         run: cargo test -p detersim-testkit --test experiment_suite
+      - name: coverage guided search
+        run: cargo test -p detersim-search --test coverage_guided_search
+      - name: checker v3 models
+        run: cargo test -p detersim-check --test checker_v3_models
       - name: mini raft recall
         run: cargo test -p detersim-sim --test mini_raft_recall
+      - name: stream api
+        run: cargo test -p detersim-net --test stream_api
       - name: label-aware shrink
         run: cargo test -p detersim-shrink --test label_aware_shrink
       - name: debug artifact
         run: cargo test -p detersim-viz --test debug_artifact
+      - name: debug artifact v3
+        run: cargo test -p detersim-viz --test debug_artifact_v3
+      - name: cli smoke
+        run: cargo test -p detersim-cli --test cli_smoke
+      - name: cli doctor
+        run: cargo run -p detersim-cli -- doctor
       - name: release determinism soak
         env:
           DST_SEED_COUNT: "10000"

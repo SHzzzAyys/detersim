@@ -41,6 +41,10 @@ respect, and `ROADMAP.md` for the phased task list.
   reports, plant-a-bug recall, and minimized failure artifacts.
 - `detersim-cli`: local artifact and suite commands layered above public APIs;
   it is intentionally outside the deterministic core.
+- `detersim-search`: coverage/signal guided seed search over public
+  `ExperimentCase` values.
+- `detersim-net`: deterministic stream helpers for socket-shaped protocols
+  without real sockets.
 - The **determinism meta-test** (the master oracle): same seed ⇒ byte-identical
   event trace, across pingpong, spawn/join, multi-node gossip, timeout
   cancellation, network partition, WAL crash recovery, bit rot, and a toy
@@ -81,11 +85,19 @@ cargo test -p detersim-sim --test storage_faults
 cargo test -p detersim-sim --test mini_raft_recall
 cargo test -p detersim-shrink --test label_aware_shrink
 cargo test -p detersim-viz --test debug_artifact
+cargo test -p detersim-search --test coverage_guided_search
+cargo test -p detersim-check --test checker_v3_models
+cargo test -p detersim-net --test stream_api
+cargo test -p detersim-viz --test debug_artifact_v3
+cargo test -p detersim-cli --test cli_smoke
 
 # CLI smoke paths
+cargo run -p detersim-cli -- doctor
 cargo run -p detersim-cli -- run-suite
+cargo run -p detersim-cli -- search --budget 100 --strategy coverage-guided
 cargo run -p detersim-cli -- shrink
 cargo run -p detersim-cli -- render 0 target/detersim-artifacts/missing-message.html
+cargo run -p detersim-cli -- explain
 cargo run -p detersim-testkit --example v2_artifacts
 
 # Determinism soak over many seeds (release)
@@ -102,6 +114,13 @@ See also:
 - `docs/tutorial-debug-failure.md` for seed → replay → shrink → artifact.
 - `docs/design-determinism.md` for the core determinism model.
 - `docs/protocol-benchmarks.md` for KV and Mini-Raft benchmark design.
+- `docs/status-v3-plan.md` for the V3 beta scope.
+- `docs/v3-search.md` and `docs/tutorial-coverage-guided-search.md` for guided
+  seed search.
+- `docs/v3-artifact-schema.md` for schema version 3 debug artifacts.
+- `docs/tutorial-stream-api.md` for deterministic stream helpers.
+- `docs/checker-models.md` for linearizability and Elle-lite checker models.
+- `docs/public-api-stability.md` for beta compatibility rules.
 - `docs/experiments/replicated-kv.md` for the formal KV recall benchmark.
 - `docs/experiments/mini-raft.md` for the minimal Mini-Raft reference
   experiment.
@@ -125,6 +144,11 @@ schema versioning, and CI/nightly gate definitions.
 The V2 line adds labeled tape diagnostics, label-aware shrinking, suite-level
 experiment reports, schema-v2 debug artifacts, checker-backed Mini-Raft stale
 read recall, CLI smoke commands, and GitHub contribution templates.
+
+The V3 line adds a beta-facing search/checker/artifact/CLI layer: coverage
+guided search, checker artifacts, Elle-lite transaction checking, deterministic
+stream helpers, schema-v3 debug artifacts, `doctor/init-sut/explain` CLI
+commands, and a manual full-soak workflow.
 
 The Replicated KV suite has positive and negative controls for
 ack-before-replication, stale follower reads, lost updates, duplicate request
