@@ -807,23 +807,42 @@ impl NemesisDraw for TapeDraw<'_> {
 }
 
 #[derive(Clone, Debug)]
+/// Result of running a deterministic world to quiescence or abort.
 pub struct RunReport {
+    /// Seed used to initialize the world.
     pub seed: u64,
+    /// Deterministic event trace.
     pub trace: Vec<String>,
+    /// Fault events applied by nemesis.
     pub nemesis_trace: Vec<String>,
+    /// User/SUT-visible history lines recorded through `SimEnv::record`.
     pub history: Vec<String>,
+    /// Normalized semantic coverage signals for search and artifacts.
     pub coverage_signals: Vec<String>,
+    /// Raw generated or consumed entropy tape values.
     pub tape_log: Vec<u64>,
+    /// Entropy tape values paired with stable draw labels.
     pub tape_events: Vec<TapeEvent>,
+    /// Whether this run used replay mode.
     pub tape_replaying: bool,
+    /// Replay input length when in replay mode.
     pub tape_input_len: Option<usize>,
+    /// Number of replay tape entries consumed.
     pub tape_cursor: usize,
+    /// True when replay consumed the full input tape.
     pub tape_consumed_all: bool,
+    /// True when replay had to use deterministic fallback values after input
+    /// tape exhaustion.
     pub tape_exhausted: bool,
+    /// Number of dispatched simulator events.
     pub dispatched: u64,
+    /// True when the horizon or max-event budget stopped the run.
     pub aborted: bool,
+    /// True when runnable events are gone while tasks remain parked.
     pub deadlocked: bool,
+    /// Number of tasks still parked at the end of the run.
     pub parked_tasks: usize,
+    /// Cached length of `tape_log`.
     pub tape_log_len: usize,
 }
 

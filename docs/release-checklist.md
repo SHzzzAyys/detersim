@@ -4,6 +4,10 @@
 
 - README distinguishes completed benchmarks from scaffolds.
 - `docs/status-v1-progress.md` matches the current crate layout and tests.
+- `CHANGELOG.md` has an entry for the release.
+- `SECURITY.md`, `CODE_OF_CONDUCT.md`, `docs/versioning.md`, and
+  `docs/crates-publishing.md` are linked from README.
+- `docs/benchmark-evidence-v3.md` reflects the current test targets.
 - Mini-Raft claims remain "minimal reference protocol", not production Raft.
 - Every public API added for the release has rustdoc.
 - Every deterministic SUT path is included in `scripts/lint_determinism.sh`.
@@ -36,7 +40,10 @@ cargo test -p detersim-check --test checker_v3_models
 cargo test -p detersim-net --test stream_api
 cargo test -p detersim-viz --test debug_artifact_v3
 cargo test -p detersim-cli --test cli_smoke
+cargo test -p detersim-cli --test cli_e2e
 cargo run -p detersim-cli -- doctor
+cargo run -p detersim-testkit --example v3_artifacts
+cargo doc --workspace --no-deps
 ```
 
 ## Artifact check

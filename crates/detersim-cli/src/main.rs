@@ -1,9 +1,10 @@
 use std::env;
 use std::path::Path;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::time::Duration;
 
 use detersim_core::{ClockExt, Env, Network};
+use detersim_net::{connect_pair, ConnectionId, StreamFault};
 use detersim_search::{run_search, search_report_to_json, SearchBudget, SearchStrategy};
 use detersim_shrink::ShrinkConfig;
 use detersim_sim::{RunReport, SimEnv, World, WorldConfig};
@@ -20,7 +21,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("doctor") => doctor(),
-        Some("init-sut") => init_sut(args.get(2).map(String::as_str)),
+        Some("init-sut") => init_sut(&args[2..]),
         Some("run-suite") => run_suite(args.get(2).map(String::as_str)),
         Some("search") => search(&args[2..]),
         Some("replay") => replay(args.get(2), args.get(3)),
@@ -41,11 +42,22 @@ fn doctor() -> ExitCode {
     let report = dropped_message_world(0);
     let suite = smoke_suite();
     let summary = run_experiment_suite(suite);
-    let ok = !report.deadlocked && summary.policy_failures == 0;
+    let sample_suite_ok = summary.policy_failures == 0;
+    let artifact_render_ok = {
+        let artifact = missing_message_v3_artifact("doctor artifact", 0);
+        debug_artifact_v3_to_json(&artifact).contains("\"schema_version\":3")
+            && debug_artifact_v3_html(&artifact).contains("<!doctype html>")
+    };
+    let rustc =
+        command_output("rustc", &["--version"]).unwrap_or_else(|| "unavailable".to_string());
+    let ok = !report.deadlocked && sample_suite_ok && artifact_render_ok;
     println!(
-        "{{\"schema_version\":3,\"ok\":{},\"workspace\":\"{}\",\"sample_deadlocked\":{},\"sample_policy_failures\":{},\"commands\":[\"run-suite\",\"search\",\"replay\",\"shrink\",\"render\",\"explain\"]}}",
+        "{{\"schema_version\":3,\"ok\":{},\"workspace\":\"{}\",\"rustc\":\"{}\",\"sample_suite_ok\":{},\"artifact_render_ok\":{},\"sample_deadlocked\":{},\"sample_policy_failures\":{},\"determinism_lint_hint\":\"bash scripts/lint_determinism.sh\",\"commands\":[\"run-suite\",\"search\",\"replay\",\"shrink\",\"render\",\"explain\"]}}",
         ok,
-        escape_json(env!("CARGO_MANIFEST_DIR")),
+        escape_json(&workspace_root()),
+        escape_json(&rustc),
+        sample_suite_ok,
+        artifact_render_ok,
         report.deadlocked,
         summary.policy_failures
     );
@@ -56,12 +68,38 @@ fn doctor() -> ExitCode {
     }
 }
 
-fn init_sut(out: Option<&str>) -> ExitCode {
+fn init_sut(args: &[String]) -> ExitCode {
+    let mut name = "detersim-sut-template".to_string();
+    let mut template = "message".to_string();
+    let mut out = None::<String>;
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--name" => {
+                idx += 1;
+                if let Some(value) = args.get(idx) {
+                    name = value.clone();
+                }
+            }
+            "--template" => {
+                idx += 1;
+                if let Some(value) = args.get(idx) {
+                    template = value.clone();
+                }
+            }
+            value => out = Some(value.to_string()),
+        }
+        idx += 1;
+    }
     let Some(out) = out else {
-        eprintln!("usage: detersim init-sut <directory>");
+        eprintln!("usage: detersim init-sut [--name name] [--template message|stream] <directory>");
         return ExitCode::from(2);
     };
-    let root = Path::new(out);
+    if template != "message" && template != "stream" {
+        eprintln!("unsupported template '{template}', expected message or stream");
+        return ExitCode::from(2);
+    }
+    let root = Path::new(&out);
     let src = root.join("src");
     let tests = root.join("tests");
     for dir in [&src, &tests] {
@@ -70,26 +108,28 @@ fn init_sut(out: Option<&str>) -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| ".".to_string());
-    let cargo = format!(
-        "[package]\nname = \"detersim-sut-template\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndetersim-core = {{ path = \"{workspace}/crates/detersim-core\" }}\ndetersim-sim = {{ path = \"{workspace}/crates/detersim-sim\" }}\ndetersim-testkit = {{ path = \"{workspace}/crates/detersim-testkit\" }}\n"
-    );
-    let lib = "use std::time::Duration;\n\nuse detersim_core::{ClockExt, Env, Network};\nuse detersim_sim::{RunReport, SimEnv, World, WorldConfig};\n\npub fn run(seed: u64, drop_percent: u32) -> RunReport {\n    let mut world = World::with_config(seed, WorldConfig { horizon_ns: 100_000_000, max_events: 10_000 });\n    world.set_drop_percent(drop_percent);\n    world.add_node(0, |env: SimEnv| async move {\n        let result = env.clock().timeout(Duration::from_millis(20), env.net().recv()).await;\n        if result.is_err() { env.record(\"missing-message\"); }\n    });\n    world.add_node(1, |env: SimEnv| async move { env.net().send(0, b\"hello\".to_vec()).await; });\n    world.run()\n}\n";
-    let test = "use detersim_sut_template::run;\nuse detersim_testkit::assert_deterministic;\n\n#[test]\nfn negative_control_is_deterministic() {\n    let report = assert_deterministic(0, |seed| run(seed, 0));\n    assert!(!report.history.contains(&\"missing-message\".to_string()));\n}\n\n#[test]\nfn plant_bug_is_visible() {\n    let report = run(0, 100);\n    assert!(report.history.contains(&\"missing-message\".to_string()));\n}\n";
+    let workspace = path_for_toml(&workspace_root());
+    let crate_name = crate_ident(&name);
+    let cargo = template_cargo(&name, &workspace, &template);
+    let lib = if template == "stream" {
+        stream_template_lib()
+    } else {
+        message_template_lib()
+    };
+    let test = template_test(&crate_name, &template);
+    let readme = template_readme(&name, &template);
     if let Err(err) = std::fs::write(root.join("Cargo.toml"), cargo)
         .and_then(|_| std::fs::write(src.join("lib.rs"), lib))
         .and_then(|_| std::fs::write(tests.join("detersim_sut.rs"), test))
+        .and_then(|_| std::fs::write(root.join("README.md"), readme))
     {
         eprintln!("failed to write template: {err}");
         return ExitCode::from(1);
     }
     println!(
-        "{{\"schema_version\":3,\"created\":\"{}\",\"files\":[\"Cargo.toml\",\"src/lib.rs\",\"tests/detersim_sut.rs\"]}}",
+        "{{\"schema_version\":3,\"created\":\"{}\",\"name\":\"{}\",\"template\":\"{}\",\"files\":[\"Cargo.toml\",\"README.md\",\"src/lib.rs\",\"tests/detersim_sut.rs\"]}}",
         escape_json(&root.display().to_string())
+        , escape_json(&name), escape_json(&template)
     );
     ExitCode::SUCCESS
 }
@@ -103,6 +143,7 @@ fn run_suite(out: Option<&str>) -> ExitCode {
 fn search(args: &[String]) -> ExitCode {
     let mut budget = 10u64;
     let mut strategy = SearchStrategy::CoverageGuided;
+    let mut suite = "smoke".to_string();
     let mut out = None;
     let mut idx = 0usize;
     while idx < args.len() {
@@ -124,10 +165,20 @@ fn search(args: &[String]) -> ExitCode {
             }
             "--suite" => {
                 idx += 1;
+                if let Some(value) = args.get(idx) {
+                    suite = value.clone();
+                }
             }
             value => out = Some(value),
         }
         idx += 1;
+    }
+    if suite != "smoke" {
+        let json = format!(
+            "{{\"schema_version\":3,\"ok\":false,\"unsupported_suite\":\"{}\",\"supported_suites\":[\"smoke\"],\"note\":\"test targets are the source of truth for full replicated-kv and mini-raft benchmarks\"}}",
+            escape_json(&suite)
+        );
+        return write_or_print(out, &json);
     }
     let case = smoke_case();
     let report = run_search(
@@ -240,43 +291,222 @@ fn render_examples(dir: &str) -> ExitCode {
         eprintln!("failed to create examples directory: {err}");
         return ExitCode::from(1);
     }
-    let artifact = DebugArtifactV3 {
-        title: "missing-message example".to_string(),
-        run: dropped_message_world(0),
-        experiment_json: Some(experiment_summary_to_json(&run_experiment_suite(
-            smoke_suite(),
-        ))),
-        search_json: Some(search_report_to_json(&run_search(
-            &smoke_case(),
-            SearchStrategy::CoverageGuided,
-            SearchBudget {
-                seed_count: 10,
-                retain_candidates: 8,
-            },
-        ))),
-        checker_json: None,
-        shrink_json: Some("{\"example\":\"v3\"}".to_string()),
-        failure_signature_json: Some(
-            "{\"type\":\"InvariantViolated\",\"name\":\"missing-message\"}".to_string(),
-        ),
-        coverage_json: None,
-        causal_graph_json: Some("{\"nodes\":[],\"edges\":[]}".to_string()),
-        environment_json: Some("{\"kind\":\"cli-example\"}".to_string()),
-    };
-    let json = root.join("missing-message.json");
-    let html = root.join("missing-message.html");
-    if let Err(err) = std::fs::write(&json, debug_artifact_v3_to_json(&artifact))
-        .and_then(|_| std::fs::write(&html, debug_artifact_v3_html(&artifact)))
+    let missing = missing_message_v3_artifact("missing-message example", 0);
+    let stream = stream_transcript_artifact();
+    let missing_json = root.join("missing-message.json");
+    let missing_html = root.join("missing-message.html");
+    let stream_json = root.join("stream-transcript.json");
+    let stream_html = root.join("stream-transcript.html");
+    if let Err(err) = std::fs::write(&missing_json, debug_artifact_v3_to_json(&missing))
+        .and_then(|_| std::fs::write(&missing_html, debug_artifact_v3_html(&missing)))
+        .and_then(|_| std::fs::write(&stream_json, debug_artifact_v3_to_json(&stream)))
+        .and_then(|_| std::fs::write(&stream_html, debug_artifact_v3_html(&stream)))
     {
         eprintln!("failed to write v3 examples: {err}");
         return ExitCode::from(1);
     }
     println!(
-        "{{\"schema_version\":3,\"json\":\"{}\",\"html\":\"{}\"}}",
-        escape_json(&json.display().to_string()),
-        escape_json(&html.display().to_string())
+        "{{\"schema_version\":3,\"artifacts\":[{{\"json\":\"{}\",\"html\":\"{}\"}},{{\"json\":\"{}\",\"html\":\"{}\"}}]}}",
+        escape_json(&missing_json.display().to_string()),
+        escape_json(&missing_html.display().to_string()),
+        escape_json(&stream_json.display().to_string()),
+        escape_json(&stream_html.display().to_string())
     );
     ExitCode::SUCCESS
+}
+
+fn template_cargo(name: &str, workspace: &str, template: &str) -> String {
+    let net_dep = if template == "stream" {
+        format!("detersim-net = {{ path = \"{workspace}/crates/detersim-net\" }}\n")
+    } else {
+        String::new()
+    };
+    format!(
+        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndetersim-core = {{ path = \"{workspace}/crates/detersim-core\" }}\ndetersim-sim = {{ path = \"{workspace}/crates/detersim-sim\" }}\ndetersim-testkit = {{ path = \"{workspace}/crates/detersim-testkit\" }}\n{net_dep}",
+        escape_toml(name)
+    )
+}
+
+fn message_template_lib() -> &'static str {
+    r#"use std::time::Duration;
+
+use detersim_core::{ClockExt, Env, Network};
+use detersim_sim::{RunReport, SimEnv, World, WorldConfig};
+
+pub fn run(seed: u64, drop_percent: u32) -> RunReport {
+    let mut world = World::with_config(
+        seed,
+        WorldConfig {
+            horizon_ns: 1_000_000_000,
+            max_events: 10_000,
+        },
+    );
+    world.set_drop_percent(drop_percent);
+    world.add_node(0, |env: SimEnv| async move {
+        let result = env
+            .clock()
+            .timeout(Duration::from_millis(200), env.net().recv())
+            .await;
+        if result.is_err() {
+            env.record("missing-message");
+        }
+    });
+    world.add_node(1, |env: SimEnv| async move {
+        env.net().send(0, b"hello".to_vec()).await;
+    });
+    world.run()
+}
+"#
+}
+
+fn stream_template_lib() -> &'static str {
+    r#"use detersim_net::{connect_pair, ConnectionId, StreamFault};
+
+pub fn transcript_lines() -> Vec<String> {
+    let mut stream = connect_pair(0, 1, ConnectionId(1));
+    stream.send(b"hello".to_vec(), &[]);
+    stream.send(b"again".to_vec(), &[StreamFault::Duplicate { seq: 1 }]);
+    stream.into_transcript().to_history_lines()
+}
+"#
+}
+
+fn template_test(crate_name: &str, template: &str) -> String {
+    if template == "stream" {
+        format!(
+            "use {crate_name}::transcript_lines;\n\n#[test]\nfn stream_transcript_is_deterministic() {{\n    let a = transcript_lines();\n    let b = transcript_lines();\n    assert_eq!(a, b);\n    assert!(a.iter().any(|line| line == \"stream:duplicate:seq=1\"));\n}}\n"
+        )
+    } else {
+        format!(
+            "use {crate_name}::run;\nuse detersim_testkit::assert_deterministic;\n\n#[test]\nfn negative_control_is_deterministic() {{\n    let report = assert_deterministic(0, |seed| run(seed, 0));\n    assert!(!report.history.contains(&\"missing-message\".to_string()));\n}}\n\n#[test]\nfn plant_bug_is_visible() {{\n    let report = run(0, 100);\n    assert!(report.history.contains(&\"missing-message\".to_string()));\n}}\n"
+        )
+    }
+}
+
+fn template_readme(name: &str, template: &str) -> String {
+    format!(
+        "# {name}\n\nGenerated by `detersim init-sut --template {template}`.\n\nRun:\n\n```powershell\ncargo test\n```\n\nThis template is intentionally local-first and uses DeterSim path dependencies from the source checkout.\n"
+    )
+}
+
+fn workspace_root() -> String {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| ".".to_string())
+}
+
+fn path_for_toml(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn crate_ident(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
+}
+
+fn escape_toml(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn command_output(command: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(command).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn missing_message_v3_artifact(title: &str, seed: u64) -> DebugArtifactV3 {
+    let case = smoke_case();
+    let summary = run_experiment_suite(smoke_suite());
+    let search = run_search(
+        &case,
+        SearchStrategy::CoverageGuided,
+        SearchBudget {
+            seed_count: 10,
+            retain_candidates: 8,
+        },
+    );
+    DebugArtifactV3 {
+        title: title.to_string(),
+        run: dropped_message_world(seed),
+        experiment_json: Some(experiment_summary_to_json(&summary)),
+        search_json: Some(search_report_to_json(&search)),
+        checker_json: None,
+        shrink_json: Some("{\"kind\":\"signature-preserving\"}".to_string()),
+        failure_signature_json: Some(
+            "{\"type\":\"InvariantViolated\",\"name\":\"missing-message\"}".to_string(),
+        ),
+        coverage_json: None,
+        causal_graph_json: Some(
+            "{\"nodes\":[\"send\",\"drop\",\"timeout\"],\"edges\":[[\"send\",\"drop\"],[\"drop\",\"timeout\"]]}".to_string(),
+        ),
+        environment_json: Some(
+            "{\"schema\":\"v3\",\"determinism\":\"same-binary-same-platform\"}".to_string(),
+        ),
+    }
+}
+
+fn stream_transcript_artifact() -> DebugArtifactV3 {
+    let report = stream_transcript_report(0);
+    DebugArtifactV3 {
+        title: "stream-transcript example".to_string(),
+        run: report,
+        experiment_json: None,
+        search_json: None,
+        checker_json: None,
+        shrink_json: Some("{\"example\":\"stream\"}".to_string()),
+        failure_signature_json: Some(
+            "{\"type\":\"InvariantViolated\",\"name\":\"stream-transcript\"}".to_string(),
+        ),
+        coverage_json: Some("[\"stream:deliver\",\"stream:duplicate\"]".to_string()),
+        causal_graph_json: Some(
+            "{\"nodes\":[\"enqueue\",\"duplicate\",\"deliver\"],\"edges\":[[\"enqueue\",\"deliver\"],[\"duplicate\",\"deliver\"]]}".to_string(),
+        ),
+        environment_json: Some("{\"kind\":\"cli-stream-example\"}".to_string()),
+    }
+}
+
+fn stream_transcript_report(seed: u64) -> RunReport {
+    let mut stream = connect_pair(0, 1, ConnectionId(1));
+    stream.send(b"hello".to_vec(), &[]);
+    stream.send(b"again".to_vec(), &[StreamFault::Duplicate { seq: 1 }]);
+    let transcript = stream.into_transcript();
+    let history = transcript.to_history_lines();
+    RunReport {
+        seed,
+        trace: history.clone(),
+        nemesis_trace: Vec::new(),
+        history,
+        coverage_signals: vec![
+            "stream:enqueue".to_string(),
+            "stream:duplicate".to_string(),
+            "stream:deliver".to_string(),
+        ],
+        tape_log: Vec::new(),
+        tape_events: Vec::new(),
+        tape_replaying: false,
+        tape_input_len: None,
+        tape_cursor: 0,
+        tape_consumed_all: true,
+        tape_exhausted: false,
+        dispatched: transcript.delivered.len() as u64,
+        aborted: false,
+        deadlocked: false,
+        parked_tasks: 0,
+        tape_log_len: 0,
+    }
 }
 
 fn smoke_suite() -> ExperimentSuite {

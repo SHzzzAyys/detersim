@@ -379,6 +379,7 @@ Render examples:
 cargo test -p detersim-viz --test debug_artifact
 cargo test -p detersim-viz --test debug_artifact_v3
 cargo run -p detersim-cli -- render --examples target/detersim-artifacts/v3
+cargo run -p detersim-testkit --example v3_artifacts
 ```
 
 ## Deterministic Stream Helpers
@@ -481,14 +482,22 @@ Manual full soak is available through `.github/workflows/full-soak.yml`.
 - [`docs/design-determinism.md`](docs/design-determinism.md): determinism model.
 - [`docs/protocol-benchmarks.md`](docs/protocol-benchmarks.md): KV and
   Mini-Raft benchmark design.
+- [`docs/benchmark-evidence-v3.md`](docs/benchmark-evidence-v3.md): V3
+  experiment evidence and limitations.
 - [`docs/checker-models.md`](docs/checker-models.md): checker models and result
   interpretation.
 - [`docs/v3-artifact-schema.md`](docs/v3-artifact-schema.md): schema-v3 debug
   artifacts.
 - [`docs/public-api-stability.md`](docs/public-api-stability.md): beta API
   stability rules.
+- [`docs/versioning.md`](docs/versioning.md): release, crate, and artifact
+  versioning.
+- [`docs/crates-publishing.md`](docs/crates-publishing.md): crates.io dry-run
+  checklist.
 - [`docs/release-checklist.md`](docs/release-checklist.md): release gates and
   tag commands.
+- [`CHANGELOG.md`](CHANGELOG.md): release notes and known limitations.
+- [`SECURITY.md`](SECURITY.md): security reporting scope.
 - [`AGENTS.md`](AGENTS.md): engineering rules for automated coding agents.
 - [`ROADMAP.md`](ROADMAP.md): phased roadmap and stretch goals.
 - [`PRD.md`](PRD.md): original product/design requirements.

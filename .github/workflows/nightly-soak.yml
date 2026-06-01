@@ -39,8 +39,10 @@ jobs:
       - name: cli smoke and coverage search
         run: |
           cargo test -p detersim-cli --test cli_smoke
-          cargo run -p detersim-cli -- search --suite replicated-kv --budget 5000 --strategy coverage-guided
+          cargo test -p detersim-cli --test cli_e2e
+          cargo run -p detersim-cli -- search --suite smoke --budget 5000 --strategy coverage-guided
           cargo run -p detersim-cli -- render --examples target/detersim-artifacts/v3
+          cargo run -p detersim-testkit --example v3_artifacts
       - name: 10k release determinism soak
         env:
           DST_SEED_COUNT: "10000"

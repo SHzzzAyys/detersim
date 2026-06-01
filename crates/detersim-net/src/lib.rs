@@ -9,21 +9,28 @@ use std::collections::{BTreeMap, BTreeSet};
 use detersim_core::NodeId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// Stable identifier for a deterministic stream connection.
 pub struct ConnectionId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// One side of a modeled stream connection.
 pub struct StreamEndpoint {
     pub node: NodeId,
     pub connection: ConnectionId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Ordered frame payload used by [`DeterministicStream`].
 pub struct Frame {
     pub seq: u64,
     pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Deterministic stream-level fault.
+///
+/// These are pure data. Runtime scheduling and entropy decisions still belong
+/// in `detersim-sim` or a higher-level harness.
 pub enum StreamFault {
     Drop { seq: u64 },
     Duplicate { seq: u64 },
@@ -33,23 +40,30 @@ pub enum StreamFault {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Human-readable stream transcript event.
 pub struct StreamEvent {
     pub label: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Transcript of modeled stream events and delivered frames.
+///
+/// Transcripts are intended for tests, histories, and debug artifacts. They are
+/// deterministic as long as callers provide deterministic fault lists.
 pub struct StreamTranscript {
     pub events: Vec<StreamEvent>,
     pub delivered: Vec<Frame>,
 }
 
 impl StreamTranscript {
+    /// Record a normalized transcript label.
     pub fn record(&mut self, label: impl Into<String>) {
         self.events.push(StreamEvent {
             label: label.into(),
         });
     }
 
+    /// Convert transcript events into history lines suitable for artifacts.
     pub fn to_history_lines(&self) -> Vec<String> {
         self.events
             .iter()
@@ -59,6 +73,10 @@ impl StreamTranscript {
 }
 
 #[derive(Clone, Debug)]
+/// Small deterministic ordered-frame model.
+///
+/// This is not a real socket and performs no I/O. It is useful for SUTs that
+/// want a stream-shaped transcript before integrating with the simulator.
 pub struct DeterministicStream {
     source: StreamEndpoint,
     target: StreamEndpoint,
@@ -71,6 +89,7 @@ pub struct DeterministicStream {
 }
 
 impl DeterministicStream {
+    /// Create a stream from `source` to `target`.
     pub fn new(source: StreamEndpoint, target: StreamEndpoint) -> Self {
         Self {
             source,
@@ -84,6 +103,7 @@ impl DeterministicStream {
         }
     }
 
+    /// Enqueue one frame under a deterministic list of stream faults.
     pub fn send(&mut self, bytes: impl Into<Vec<u8>>, faults: &[StreamFault]) {
         let frame = Frame {
             seq: self.next_send,
@@ -145,14 +165,17 @@ impl DeterministicStream {
         self.drain_ordered();
     }
 
+    /// Attempt to deliver any buffered in-order frames.
     pub fn flush(&mut self) {
         self.drain_ordered();
     }
 
+    /// Inspect the current transcript without consuming the stream.
     pub fn transcript(&self) -> &StreamTranscript {
         &self.transcript
     }
 
+    /// Flush and return the final transcript.
     pub fn into_transcript(mut self) -> StreamTranscript {
         self.flush();
         self.transcript
@@ -172,6 +195,7 @@ impl DeterministicStream {
     }
 }
 
+/// Build a one-way deterministic stream from `left` to `right`.
 pub fn connect_pair(left: NodeId, right: NodeId, connection: ConnectionId) -> DeterministicStream {
     DeterministicStream::new(
         StreamEndpoint {

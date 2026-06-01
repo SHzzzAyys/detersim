@@ -10,24 +10,42 @@ use detersim_sim::RunReport;
 use detersim_testkit::{ExperimentCase, FailureSignature};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Seed exploration strategy for an [`ExperimentCase`].
+///
+/// These strategies choose the order and ranking of deterministic runs. They do
+/// not bypass the normal generate/replay/shrink path; a discovered failure still
+/// needs a stable `FailureSignature`.
 pub enum SearchStrategy {
+    /// Baseline monotonic seed order.
     Random,
+    /// Prefer runs that add new semantic coverage signals.
     CoverageGuided,
+    /// Prefer runs that match failure signatures and add coverage.
     FailureDirected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// A stable, comparable coverage label extracted from a run report.
+///
+/// Signals are intentionally strings so new runtime and protocol layers can add
+/// coverage without changing this crate's type shape. Keep values normalized:
+/// do not include wall-clock time, pointer addresses, or trace line numbers.
 pub struct CoverageSignal {
     pub name: String,
 }
 
 #[derive(Clone, Debug, Default)]
+/// Retained high-signal seeds and the union of coverage observed during search.
 pub struct SeedCorpus {
     pub candidates: Vec<SearchCandidate>,
     pub unique_coverage: Vec<CoverageSignal>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Deterministic search limits.
+///
+/// `seed_count` is a count of candidate seeds, never a time budget.
+/// `retain_candidates` bounds the size of the retained corpus.
 pub struct SearchBudget {
     pub seed_count: u64,
     pub retain_candidates: usize,
@@ -43,6 +61,11 @@ impl Default for SearchBudget {
 }
 
 #[derive(Clone, Debug)]
+/// One retained seed candidate.
+///
+/// `rank` is the deterministic search-order position. `score` is only for
+/// ranking inside this crate and should not be treated as a stable metric across
+/// releases.
 pub struct SearchCandidate {
     pub seed: u64,
     pub rank: u64,
@@ -54,6 +77,7 @@ pub struct SearchCandidate {
 }
 
 #[derive(Clone, Debug)]
+/// Result of running a search strategy against one experiment case.
 pub struct SearchReport {
     pub strategy: SearchStrategy,
     pub seeds_attempted: u64,
@@ -123,6 +147,10 @@ pub fn run_search(
     }
 }
 
+/// Extract semantic coverage from a deterministic run report.
+///
+/// This combines runtime-provided coverage signals, tape labels, and history
+/// entries. The result is sorted and deduplicated.
 pub fn coverage_from_run(report: &RunReport) -> Vec<CoverageSignal> {
     let mut signals = BTreeSet::<CoverageSignal>::new();
     for signal in &report.coverage_signals {
@@ -143,6 +171,10 @@ pub fn coverage_from_run(report: &RunReport) -> Vec<CoverageSignal> {
     signals.into_iter().collect()
 }
 
+/// Serialize a search report as stable schema-versioned JSON.
+///
+/// This helper intentionally avoids adding a serde dependency. It is suitable
+/// for local artifacts and CLI output, not for a long-term wire protocol.
 pub fn search_report_to_json(report: &SearchReport) -> String {
     let candidates: Vec<String> = report
         .corpus

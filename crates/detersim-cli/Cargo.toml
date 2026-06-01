@@ -9,6 +9,7 @@ description = "Local command-line helpers for running DeterSim suites and artifa
 
 [dependencies]
 detersim-core = { path = "../detersim-core" }
+detersim-net = { path = "../detersim-net" }
 detersim-search = { path = "../detersim-search" }
 detersim-shrink = { path = "../detersim-shrink" }
 detersim-sim = { path = "../detersim-sim" }

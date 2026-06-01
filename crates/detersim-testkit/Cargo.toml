@@ -10,6 +10,7 @@ description = "Reusable deterministic test harness helpers for detersim users."
 [dependencies]
 detersim-check = { path = "../detersim-check" }
 detersim-core = { path = "../detersim-core" }
+detersim-net = { path = "../detersim-net" }
 detersim-nemesis = { path = "../detersim-nemesis" }
 detersim-protocols = { path = "../detersim-protocols" }
 detersim-shrink = { path = "../detersim-shrink" }

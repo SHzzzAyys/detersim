@@ -15,6 +15,11 @@ pub struct DebugArtifact {
 }
 
 #[derive(Clone, Debug)]
+/// Schema-version 3 debug artifact.
+///
+/// V3 wraps the deterministic run report with optional experiment, search,
+/// checker, shrink, coverage, causal-graph, and environment sections. The HTML
+/// renderer remains self-contained and must not load external resources.
 pub struct DebugArtifactV3 {
     pub title: String,
     pub run: RunReport,
@@ -50,6 +55,7 @@ pub fn run_report_to_json(report: &RunReport) -> String {
     )
 }
 
+/// Serialize a V3 debug artifact as schema-versioned JSON.
 pub fn debug_artifact_v3_to_json(artifact: &DebugArtifactV3) -> String {
     format!(
         "{{\"schema_version\":3,\"title\":\"{}\",\"run\":{},\"experiment\":{},\"search\":{},\"checker\":{},\"shrink\":{},\"failure_signature\":{},\"coverage\":{},\"causal_graph\":{},\"environment\":{}}}",
@@ -66,6 +72,7 @@ pub fn debug_artifact_v3_to_json(artifact: &DebugArtifactV3) -> String {
     )
 }
 
+/// Extract `schema_version` from a debug artifact JSON string.
 pub fn debug_artifact_schema_version(json: &str) -> Option<u32> {
     let marker = "\"schema_version\":";
     let start = json.find(marker)? + marker.len();
@@ -109,6 +116,7 @@ pub fn debug_artifact_html(artifact: &DebugArtifact) -> String {
     )
 }
 
+/// Render a self-contained HTML viewer for a V3 debug artifact.
 pub fn debug_artifact_v3_html(artifact: &DebugArtifactV3) -> String {
     let json = debug_artifact_v3_to_json(artifact);
     format!(

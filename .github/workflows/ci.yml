@@ -18,6 +18,8 @@ jobs:
         run: cargo test --workspace
       - name: clippy
         run: cargo clippy --workspace -- -D warnings
+      - name: docs
+        run: cargo doc --workspace --no-deps
       - name: determinism lint
         run: bash scripts/lint_determinism.sh
       - name: replicated kv recall
@@ -40,8 +42,12 @@ jobs:
         run: cargo test -p detersim-viz --test debug_artifact_v3
       - name: cli smoke
         run: cargo test -p detersim-cli --test cli_smoke
+      - name: cli e2e
+        run: cargo test -p detersim-cli --test cli_e2e
       - name: cli doctor
         run: cargo run -p detersim-cli -- doctor
+      - name: v3 artifact examples
+        run: cargo run -p detersim-testkit --example v3_artifacts
       - name: release determinism soak
         env:
           DST_SEED_COUNT: "10000"

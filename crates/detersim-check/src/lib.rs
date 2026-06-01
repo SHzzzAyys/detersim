@@ -121,12 +121,14 @@ pub enum LinearizabilityResult {
 pub type LinResult = LinearizabilityResult;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// High-level checker family used in artifacts and docs.
 pub enum ConsistencyModel {
     Linearizability,
     Serializability,
     AppendLog,
 }
 
+/// Alias for the built-in append-only log linearizability model.
 pub type AppendLogModel<T> = models::AppendOnlyLog<T>;
 
 /// Stable checker artifact fields that callers can serialize or attach to a
@@ -141,6 +143,10 @@ pub struct CheckerStats {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Schema-stable checker artifact.
+///
+/// This is a compact JSON-ready view of a checker result. It deliberately
+/// avoids embedding generic operation payloads so artifacts can stay stable.
 pub struct CheckerArtifact {
     pub model: String,
     pub outcome: String,
@@ -209,6 +215,7 @@ impl LinearizabilityResult {
 }
 
 impl CheckerArtifact {
+    /// Serialize this artifact as schema-versioned JSON.
     pub fn to_json(&self) -> String {
         format!(
             "{{\"schema_version\":3,\"model\":\"{}\",\"outcome\":\"{}\",\"witness_order\":{},\"conflict_ops\":{},\"minimal_subhistory\":{},\"explored_states\":{},\"budget_exhausted\":{},\"details\":{}}}",
@@ -225,12 +232,17 @@ impl CheckerArtifact {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// One operation inside a compact transaction history.
 pub enum TxnAction<K, V> {
     Read { key: K, value: Option<V> },
     Write { key: K, value: V },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A committed or incomplete transaction operation.
+///
+/// The Elle-lite checker currently considers committed transactions with a
+/// completion time. Incomplete or aborted transactions are ignored.
 pub struct TxnOpRecord<K, V> {
     pub id: u64,
     pub process: u32,
@@ -241,6 +253,8 @@ pub struct TxnOpRecord<K, V> {
 }
 
 impl<K, V> TxnOpRecord<K, V> {
+    /// Construct a completed committed transaction using logical nanosecond
+    /// indexes for invocation and completion.
     pub fn committed(
         id: u64,
         process: u32,
@@ -262,6 +276,10 @@ impl<K, V> TxnOpRecord<K, V> {
 pub type TxnHistory<K, V> = Vec<TxnOpRecord<K, V>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Result of the small serializability checker.
+///
+/// `Inconclusive` is not a failure. It means the deterministic search budget was
+/// exhausted before a definitive result was found.
 pub enum SerializableResult {
     Serializable {
         order: Vec<u64>,
@@ -280,6 +298,7 @@ pub enum SerializableResult {
 }
 
 impl SerializableResult {
+    /// Convert the result into a schema-stable checker artifact.
     pub fn checker_artifact(&self, model: impl Into<String>) -> CheckerArtifact {
         let (outcome, stats) = match self {
             SerializableResult::Serializable { order } => (
@@ -387,6 +406,12 @@ where
     }
 }
 
+/// Check a compact Elle-lite transaction history for serializability.
+///
+/// This is intentionally small: it enumerates deterministic sequential orders
+/// over completed committed transactions and verifies observed reads against a
+/// key/value state. It is meant for small histories and benchmark artifacts, not
+/// as a complete Elle replacement.
 pub fn check_serializable<K, V>(
     initial: BTreeMap<K, V>,
     history: &[TxnOpRecord<K, V>],
