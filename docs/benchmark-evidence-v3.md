@@ -107,8 +107,26 @@ does not yet replace the explicit Rust test targets listed here.
 - Replay/shrink status: CLI and testkit use public replay/shrink APIs.
 - Artifact commands:
   - `cargo test -p detersim-search --test coverage_guided_search`
+  - `cargo test -p detersim-search --test search_comparison`
   - `cargo test -p detersim-viz --test debug_artifact_v3`
+  - `cargo test -p detersim-viz --test causal_artifact_v3`
   - `cargo run -p detersim-testkit --example v3_artifacts`
   - `cargo run -p detersim-cli -- render --examples target/detersim-artifacts/v3`
-- Limitations: full replicated-kv and mini-raft CLI suite aliases remain
-  placeholders; explicit test targets are the source of truth.
+- Limitations: CLI suite aliases now cover smoke, replicated KV, Mini-Raft
+  smoke, and storage faults. The explicit test targets remain the source of
+  truth for full benchmark gates.
+
+## V3.1 Search Comparison
+
+| Case | Hypothesis | Budget | Oracle | Result |
+| --- | --- | ---: | --- | --- |
+| odd-seed-missing-message | Coverage-guided order should find the odd-seed failure before monotonic random order. | 8 | `InvariantViolated(odd-seed-failure)` | Coverage-guided first failing rank `0`; random first failing rank `1`. |
+| replicated-kv-read-from-stale-follower | Real protocol suite should be searchable and produce stable `NotLinearizable` signatures. | 500 | `SingleKeyKv` | Every seed recalls; coverage-guided is not worse, but this case is not a prioritization benchmark because every seed fails. |
+
+Source-of-truth commands:
+
+```powershell
+cargo test -p detersim-search --test search_comparison
+cargo run -p detersim-cli -- search --suite replicated-kv --budget 500 --strategy coverage-guided
+cargo run -p detersim-cli -- search --suite replicated-kv --budget 500 --compare
+```

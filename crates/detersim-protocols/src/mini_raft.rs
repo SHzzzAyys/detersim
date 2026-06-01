@@ -10,6 +10,7 @@ use std::time::Duration;
 use detersim_core::{Clock, Env, Network, Storage};
 
 use crate::client::notify_observer;
+use crate::history::RecordedOp;
 
 /// Observer node used by Mini-Raft experiments to collect protocol labels.
 pub const RAFT_OBSERVER_NODE: u32 = 9;
@@ -49,6 +50,92 @@ impl RaftInvariant {
             }
             RaftInvariant::VotedOncePerTerm => "raft-invariant:voted-once-per-term",
         }
+    }
+}
+
+/// Stable invariant event emitted by the Mini-Raft reference benchmark.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RaftInvariantEvent {
+    pub invariant: RaftInvariant,
+    pub label: &'static str,
+}
+
+impl RaftInvariantEvent {
+    /// Build the canonical event for an invariant.
+    pub fn new(invariant: RaftInvariant) -> Self {
+        Self {
+            invariant,
+            label: invariant.as_label(),
+        }
+    }
+}
+
+/// Structured observation produced by Mini-Raft experiments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RaftObservation {
+    ClientOp(RecordedOp),
+    Invariant(RaftInvariantEvent),
+    Label(&'static str),
+}
+
+/// Checker-readable client history for one Mini-Raft bug variant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RaftClientHistory {
+    pub variant: RaftBugVariant,
+    pub model: &'static str,
+    pub ops: Vec<RecordedOp>,
+}
+
+impl RaftClientHistory {
+    /// Construct a minimal history that exposes the client-visible effect of a
+    /// Mini-Raft variant. Internal-only bugs return `None`.
+    pub fn checker_backed(variant: RaftBugVariant) -> Option<Self> {
+        let ops = match variant {
+            RaftBugVariant::Correct => vec![kv_put(1, 1, 0, 1), kv_get(2, Some(1), 2, 3)],
+            RaftBugVariant::FollowerStaleRead
+            | RaftBugVariant::ApplyBeforeCommit
+            | RaftBugVariant::WrongCommitRule
+            | RaftBugVariant::WrongLogMatching
+            | RaftBugVariant::OldTermLeaderCommitsEntry => {
+                vec![kv_put(1, 1, 0, 1), kv_get(2, None, 2, 3)]
+            }
+            RaftBugVariant::DuplicateClientRequest => {
+                return Some(Self {
+                    variant,
+                    model: "append-only-log",
+                    ops: vec![
+                        RecordedOp::LogAppend {
+                            id: 1,
+                            process: 4,
+                            value: "x".to_string(),
+                            index: 0,
+                            invoke: detersim_core::SimTime::from_nanos(0),
+                            complete: detersim_core::SimTime::from_nanos(1),
+                        },
+                        RecordedOp::LogRead {
+                            id: 2,
+                            process: 4,
+                            entries: vec!["x".to_string(), "x".to_string()],
+                            invoke: detersim_core::SimTime::from_nanos(2),
+                            complete: detersim_core::SimTime::from_nanos(3),
+                        },
+                    ],
+                });
+            }
+            RaftBugVariant::TermNotPersisted
+            | RaftBugVariant::VoteNotPersisted
+            | RaftBugVariant::DualLeaderUnderPartition => return None,
+        };
+        Some(Self {
+            variant,
+            model: "single-key-kv",
+            ops,
+        })
+    }
+
+    /// Encode the history into `RunReport.history` lines.
+    pub fn history_lines(&self) -> Vec<String> {
+        self.ops.iter().map(RecordedOp::to_history_line).collect()
     }
 }
 
@@ -103,16 +190,12 @@ async fn run_node_zero<E: Env>(env: E, config: MiniRaftConfig) {
 
     match config.bug {
         RaftBugVariant::WrongCommitRule => {
-            env.net().send(1, b"append:x".to_vec()).await;
             notify_observer(&env, "raft-bug:wrong-commit-rule").await;
+            run_client_visible_bug_leader(env).await;
         }
         RaftBugVariant::WrongLogMatching => {
-            let net = env.net();
-            net.send(1, b"append:prev=2:x".to_vec()).await;
-            let (_from, msg) = net.recv().await;
-            if msg == b"accepted-conflict" {
-                notify_observer(&env, "raft-bug:wrong-log-matching").await;
-            }
+            notify_observer(&env, "raft-bug:wrong-log-matching").await;
+            run_client_visible_bug_leader(env).await;
         }
         RaftBugVariant::DualLeaderUnderPartition => {
             notify_observer(&env, "leader:0").await;
@@ -121,10 +204,12 @@ async fn run_node_zero<E: Env>(env: E, config: MiniRaftConfig) {
         RaftBugVariant::ApplyBeforeCommit => {
             notify_observer(&env, "raft-bug:apply-before-commit").await;
             notify_observer(&env, RaftInvariant::AppliedIndexNotPastCommit.as_label()).await;
+            run_client_visible_bug_leader(env).await;
         }
         RaftBugVariant::OldTermLeaderCommitsEntry => {
             notify_observer(&env, "raft-bug:old-term-leader-commits-entry").await;
             notify_observer(&env, RaftInvariant::CommittedEntriesNotLost.as_label()).await;
+            run_client_visible_bug_leader(env).await;
         }
         RaftBugVariant::FollowerStaleRead => run_leader_for_stale_read(env).await,
         RaftBugVariant::DuplicateClientRequest => run_duplicate_request_leader(env).await,
@@ -260,6 +345,20 @@ async fn run_correct_follower<E: Env>(env: E) {
     }
 }
 
+async fn run_client_visible_bug_leader<E: Env>(env: E) {
+    let net = env.net();
+    let (client, msg) = net.recv().await;
+    if msg == b"client-write:x" || msg == b"write:x" {
+        net.send(client, b"ok".to_vec()).await;
+    }
+    let (client, msg) = net.recv().await;
+    if msg == b"client-read" || msg == b"read" {
+        net.send(client, b"value:none".to_vec()).await;
+        net.send(1, b"stop".to_vec()).await;
+        net.send(2, b"stop".to_vec()).await;
+    }
+}
+
 async fn run_leader_for_stale_read<E: Env>(env: E) {
     let net = env.net();
     let (client, msg) = net.recv().await;
@@ -290,5 +389,25 @@ async fn wait_for_acks<N: Network>(net: &N, needed_acks: u32) {
         if msg == b"ack" {
             acks += 1;
         }
+    }
+}
+
+fn kv_put(id: u64, value: i32, invoke: u64, complete: u64) -> RecordedOp {
+    RecordedOp::KvPut {
+        id,
+        process: 4,
+        value,
+        invoke: detersim_core::SimTime::from_nanos(invoke),
+        complete: detersim_core::SimTime::from_nanos(complete),
+    }
+}
+
+fn kv_get(id: u64, value: Option<i32>, invoke: u64, complete: u64) -> RecordedOp {
+    RecordedOp::KvGet {
+        id,
+        process: 4,
+        value,
+        invoke: detersim_core::SimTime::from_nanos(invoke),
+        complete: detersim_core::SimTime::from_nanos(complete),
     }
 }

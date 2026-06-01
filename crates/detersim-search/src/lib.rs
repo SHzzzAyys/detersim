@@ -87,6 +87,27 @@ pub struct SearchReport {
     pub corpus: SeedCorpus,
 }
 
+/// Per-strategy row inside a search comparison report.
+#[derive(Clone, Debug)]
+pub struct StrategyComparison {
+    pub strategy: SearchStrategy,
+    pub seeds_attempted: u64,
+    pub first_failing_seed: Option<u64>,
+    pub first_failing_rank: Option<u64>,
+    pub failures_observed: u64,
+    pub unique_coverage: usize,
+    pub retained_candidates: usize,
+}
+
+/// Deterministic comparison of multiple search strategies on one case.
+#[derive(Clone, Debug)]
+pub struct SearchComparisonReport {
+    pub case_name: &'static str,
+    pub budget: SearchBudget,
+    pub rows: Vec<StrategyComparison>,
+    pub best_strategy: Option<SearchStrategy>,
+}
+
 pub fn run_search(
     case: &ExperimentCase,
     strategy: SearchStrategy,
@@ -147,6 +168,56 @@ pub fn run_search(
     }
 }
 
+/// Run several search strategies against the same experiment case.
+///
+/// The best strategy is the one with the lowest first-failing rank. If no
+/// strategy finds a failure, the first strategy with the most unique coverage is
+/// selected. This is deterministic and intended for benchmark evidence, not for
+/// adaptive runtime scheduling.
+pub fn compare_search_strategies(
+    case: &ExperimentCase,
+    strategies: &[SearchStrategy],
+    budget: SearchBudget,
+) -> SearchComparisonReport {
+    let rows: Vec<StrategyComparison> = strategies
+        .iter()
+        .copied()
+        .map(|strategy| {
+            let report = run_search(case, strategy, budget);
+            StrategyComparison {
+                strategy,
+                seeds_attempted: report.seeds_attempted,
+                first_failing_seed: report.first_failing_seed,
+                first_failing_rank: report.first_failing_rank,
+                failures_observed: report.failures_observed,
+                unique_coverage: report.corpus.unique_coverage.len(),
+                retained_candidates: report.corpus.candidates.len(),
+            }
+        })
+        .collect();
+    let best_strategy = rows
+        .iter()
+        .filter(|row| row.first_failing_rank.is_some())
+        .min_by_key(|row| {
+            (
+                row.first_failing_rank.unwrap_or(u64::MAX),
+                row.strategy_rank(),
+            )
+        })
+        .or_else(|| {
+            rows.iter()
+                .max_by_key(|row| (row.unique_coverage, std::cmp::Reverse(row.strategy_rank())))
+        })
+        .map(|row| row.strategy);
+
+    SearchComparisonReport {
+        case_name: case.name,
+        budget,
+        rows,
+        best_strategy,
+    }
+}
+
 /// Extract semantic coverage from a deterministic run report.
 ///
 /// This combines runtime-provided coverage signals, tape labels, and history
@@ -165,7 +236,7 @@ pub fn coverage_from_run(report: &RunReport) -> Vec<CoverageSignal> {
     }
     for entry in &report.history {
         signals.insert(CoverageSignal {
-            name: format!("history:{entry}"),
+            name: normalize_history_signal(entry),
         });
     }
     signals.into_iter().collect()
@@ -203,6 +274,44 @@ pub fn search_report_to_json(report: &SearchReport) -> String {
         coverage_json(&report.corpus.unique_coverage),
         candidates.join(",")
     )
+}
+
+/// Serialize a search comparison as stable schema-versioned JSON.
+pub fn search_comparison_report_to_json(report: &SearchComparisonReport) -> String {
+    let rows: Vec<String> = report
+        .rows
+        .iter()
+        .map(|row| {
+            format!(
+                "{{\"strategy\":\"{:?}\",\"seeds_attempted\":{},\"first_failing_seed\":{},\"first_failing_rank\":{},\"failures_observed\":{},\"unique_coverage\":{},\"retained_candidates\":{}}}",
+                row.strategy,
+                row.seeds_attempted,
+                option_u64(row.first_failing_seed),
+                option_u64(row.first_failing_rank),
+                row.failures_observed,
+                row.unique_coverage,
+                row.retained_candidates
+            )
+        })
+        .collect();
+    format!(
+        "{{\"schema_version\":3,\"case\":\"{}\",\"seed_budget\":{},\"retain_candidates\":{},\"best_strategy\":{},\"rows\":[{}]}}",
+        escape_json(report.case_name),
+        report.budget.seed_count,
+        report.budget.retain_candidates,
+        option_strategy(report.best_strategy),
+        rows.join(",")
+    )
+}
+
+impl StrategyComparison {
+    fn strategy_rank(&self) -> u8 {
+        match self.strategy {
+            SearchStrategy::Random => 0,
+            SearchStrategy::CoverageGuided => 1,
+            SearchStrategy::FailureDirected => 2,
+        }
+    }
 }
 
 fn seed_order(strategy: SearchStrategy, seed_count: u64) -> Vec<u64> {
@@ -258,6 +367,20 @@ fn retain_best(candidates: &mut Vec<SearchCandidate>, retain: usize) {
     candidates.truncate(retain);
 }
 
+fn normalize_history_signal(entry: &str) -> String {
+    let parts: Vec<_> = entry.split(':').collect();
+    match parts.as_slice() {
+        ["kv", _, op, ..] => format!("history:kv:{op}"),
+        ["log", _, op, ..] => format!("history:log:{op}"),
+        ["raft-bug", rest @ ..] => format!("history:raft-bug:{}", rest.join(":")),
+        ["raft-invariant", rest @ ..] => format!("history:raft-invariant:{}", rest.join(":")),
+        ["storage-corruption", label, ..] => format!("history:storage-corruption:{label}"),
+        [single] => format!("history:{single}"),
+        [head, second, ..] => format!("history:{head}:{second}"),
+        [] => "history:empty".to_string(),
+    }
+}
+
 fn coverage_json(signals: &[CoverageSignal]) -> String {
     let items: Vec<String> = signals
         .iter()
@@ -302,6 +425,12 @@ fn signature_json(signature: &FailureSignature) -> String {
 fn option_u64(value: Option<u64>) -> String {
     value
         .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn option_strategy(value: Option<SearchStrategy>) -> String {
+    value
+        .map(|strategy| format!("\"{strategy:?}\""))
         .unwrap_or_else(|| "null".to_string())
 }
 

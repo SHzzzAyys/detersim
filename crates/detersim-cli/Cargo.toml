@@ -8,8 +8,10 @@ readme = "../../README.md"
 description = "Local command-line helpers for running DeterSim suites and artifacts."
 
 [dependencies]
+detersim-check = { path = "../detersim-check" }
 detersim-core = { path = "../detersim-core" }
 detersim-net = { path = "../detersim-net" }
+detersim-protocols = { path = "../detersim-protocols" }
 detersim-search = { path = "../detersim-search" }
 detersim-shrink = { path = "../detersim-shrink" }
 detersim-sim = { path = "../detersim-sim" }

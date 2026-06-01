@@ -3,18 +3,29 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
-use detersim_core::{ClockExt, Env, Network};
+use detersim_check::models::{AppendOnlyLog, SingleKeyKv};
+use detersim_check::{check_linearizable_with_budget, CheckBudget};
+use detersim_core::{ClockExt, Env, Network, Storage};
 use detersim_net::{connect_pair, ConnectionId, StreamFault};
-use detersim_search::{run_search, search_report_to_json, SearchBudget, SearchStrategy};
+use detersim_protocols::{
+    append_log_history, run_mini_raft, run_mini_raft_kv_client, run_primary_backup_kv,
+    run_primary_backup_kv_client, single_key_kv_history, KvBugVariant, KvConfig, MiniRaftConfig,
+    RaftBugVariant,
+};
+use detersim_search::{
+    compare_search_strategies, run_search, search_comparison_report_to_json, search_report_to_json,
+    SearchBudget, SearchStrategy,
+};
 use detersim_shrink::ShrinkConfig;
 use detersim_sim::{RunReport, SimEnv, World, WorldConfig};
 use detersim_testkit::{
-    experiment_summary_to_json, run_experiment_suite, shrink_replay_failure, ExperimentBudget,
-    ExperimentCase, ExperimentSuite, FailureSignature, RecallPolicy,
+    experiment_summary_to_json, linearizability_signature, run_experiment_suite,
+    shrink_replay_failure, ExperimentBudget, ExperimentCase, ExperimentSuite, FailureSignature,
+    RecallPolicy,
 };
 use detersim_viz::{
     debug_artifact_html, debug_artifact_to_json, debug_artifact_v3_html, debug_artifact_v3_to_json,
-    DebugArtifact, DebugArtifactV3,
+    CausalGraph, DebugArtifact, DebugArtifactV3,
 };
 
 fn main() -> ExitCode {
@@ -22,7 +33,7 @@ fn main() -> ExitCode {
     match args.get(1).map(String::as_str) {
         Some("doctor") => doctor(),
         Some("init-sut") => init_sut(&args[2..]),
-        Some("run-suite") => run_suite(args.get(2).map(String::as_str)),
+        Some("run-suite") => run_suite(&args[2..]),
         Some("search") => search(&args[2..]),
         Some("replay") => replay(args.get(2), args.get(3)),
         Some("shrink") => shrink(args.get(2).map(String::as_str)),
@@ -134,16 +145,21 @@ fn init_sut(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_suite(out: Option<&str>) -> ExitCode {
-    let summary = run_experiment_suite(smoke_suite());
+fn run_suite(args: &[String]) -> ExitCode {
+    let (suite_name, out) = parse_suite_and_out(args, "smoke");
+    let Some(suite) = suite_by_name(&suite_name) else {
+        return unsupported_suite(out, &suite_name);
+    };
+    let summary = run_experiment_suite(suite);
     let json = experiment_summary_to_json(&summary);
-    write_or_print(out, &json)
+    write_or_print(out.as_deref(), &json)
 }
 
 fn search(args: &[String]) -> ExitCode {
     let mut budget = 10u64;
     let mut strategy = SearchStrategy::CoverageGuided;
     let mut suite = "smoke".to_string();
+    let mut compare = false;
     let mut out = None;
     let mut idx = 0usize;
     while idx < args.len() {
@@ -169,27 +185,29 @@ fn search(args: &[String]) -> ExitCode {
                     suite = value.clone();
                 }
             }
+            "--compare" => compare = true,
             value => out = Some(value),
         }
         idx += 1;
     }
-    if suite != "smoke" {
-        let json = format!(
-            "{{\"schema_version\":3,\"ok\":false,\"unsupported_suite\":\"{}\",\"supported_suites\":[\"smoke\"],\"note\":\"test targets are the source of truth for full replicated-kv and mini-raft benchmarks\"}}",
-            escape_json(&suite)
+    let Some(case) = case_by_suite_name(&suite) else {
+        return unsupported_suite(out.map(str::to_string), &suite);
+    };
+    let search_budget = SearchBudget {
+        seed_count: budget,
+        retain_candidates: 16,
+    };
+    if compare {
+        let report = compare_search_strategies(
+            &case,
+            &[SearchStrategy::Random, SearchStrategy::CoverageGuided],
+            search_budget,
         );
-        return write_or_print(out, &json);
+        write_or_print(out, &search_comparison_report_to_json(&report))
+    } else {
+        let report = run_search(&case, strategy, search_budget);
+        write_or_print(out, &search_report_to_json(&report))
     }
-    let case = smoke_case();
-    let report = run_search(
-        &case,
-        strategy,
-        SearchBudget {
-            seed_count: budget,
-            retain_candidates: 16,
-        },
-    );
-    write_or_print(out, &search_report_to_json(&report))
 }
 
 fn replay(seed: Option<&String>, tape: Option<&String>) -> ExitCode {
@@ -292,25 +310,36 @@ fn render_examples(dir: &str) -> ExitCode {
         return ExitCode::from(1);
     }
     let missing = missing_message_v3_artifact("missing-message example", 0);
+    let replicated = replicated_kv_artifact();
+    let mini_raft = mini_raft_artifact();
+    let storage = storage_fault_artifact();
     let stream = stream_transcript_artifact();
-    let missing_json = root.join("missing-message.json");
-    let missing_html = root.join("missing-message.html");
-    let stream_json = root.join("stream-transcript.json");
-    let stream_html = root.join("stream-transcript.html");
-    if let Err(err) = std::fs::write(&missing_json, debug_artifact_v3_to_json(&missing))
-        .and_then(|_| std::fs::write(&missing_html, debug_artifact_v3_html(&missing)))
-        .and_then(|_| std::fs::write(&stream_json, debug_artifact_v3_to_json(&stream)))
-        .and_then(|_| std::fs::write(&stream_html, debug_artifact_v3_html(&stream)))
-    {
-        eprintln!("failed to write v3 examples: {err}");
-        return ExitCode::from(1);
+    let artifacts = [
+        ("missing-message", missing),
+        ("replicated-kv-stale-read", replicated),
+        ("mini-raft-stale-read", mini_raft),
+        ("storage-bitrot", storage),
+        ("stream-transcript", stream),
+    ];
+    let mut written = Vec::new();
+    for (name, artifact) in artifacts {
+        let json_path = root.join(format!("{name}.json"));
+        let html_path = root.join(format!("{name}.html"));
+        if let Err(err) = std::fs::write(&json_path, debug_artifact_v3_to_json(&artifact))
+            .and_then(|_| std::fs::write(&html_path, debug_artifact_v3_html(&artifact)))
+        {
+            eprintln!("failed to write v3 examples: {err}");
+            return ExitCode::from(1);
+        }
+        written.push(format!(
+            "{{\"json\":\"{}\",\"html\":\"{}\"}}",
+            escape_json(&json_path.display().to_string()),
+            escape_json(&html_path.display().to_string())
+        ));
     }
     println!(
-        "{{\"schema_version\":3,\"artifacts\":[{{\"json\":\"{}\",\"html\":\"{}\"}},{{\"json\":\"{}\",\"html\":\"{}\"}}]}}",
-        escape_json(&missing_json.display().to_string()),
-        escape_json(&missing_html.display().to_string()),
-        escape_json(&stream_json.display().to_string()),
-        escape_json(&stream_html.display().to_string())
+        "{{\"schema_version\":3,\"artifacts\":[{}]}}",
+        written.join(",")
     );
     ExitCode::SUCCESS
 }
@@ -438,9 +467,11 @@ fn missing_message_v3_artifact(title: &str, seed: u64) -> DebugArtifactV3 {
             retain_candidates: 8,
         },
     );
+    let run = dropped_message_world(seed);
+    let graph = CausalGraph::from_run(&run).to_json();
     DebugArtifactV3 {
         title: title.to_string(),
-        run: dropped_message_world(seed),
+        run,
         experiment_json: Some(experiment_summary_to_json(&summary)),
         search_json: Some(search_report_to_json(&search)),
         checker_json: None,
@@ -449,17 +480,90 @@ fn missing_message_v3_artifact(title: &str, seed: u64) -> DebugArtifactV3 {
             "{\"type\":\"InvariantViolated\",\"name\":\"missing-message\"}".to_string(),
         ),
         coverage_json: None,
-        causal_graph_json: Some(
-            "{\"nodes\":[\"send\",\"drop\",\"timeout\"],\"edges\":[[\"send\",\"drop\"],[\"drop\",\"timeout\"]]}".to_string(),
-        ),
+        causal_graph_json: Some(graph),
         environment_json: Some(
             "{\"schema\":\"v3\",\"determinism\":\"same-binary-same-platform\"}".to_string(),
         ),
     }
 }
 
+fn replicated_kv_artifact() -> DebugArtifactV3 {
+    let run = replicated_kv_world(0);
+    let checker = check_linearizable_with_budget(
+        &SingleKeyKv::new(None),
+        &single_key_kv_history(&run.history),
+        CheckBudget { max_steps: 10_000 },
+    )
+    .checker_artifact("single-key-kv")
+    .to_json();
+    DebugArtifactV3 {
+        title: "replicated-kv stale read".to_string(),
+        causal_graph_json: Some(CausalGraph::from_run(&run).to_json()),
+        run,
+        experiment_json: Some(experiment_summary_to_json(&run_experiment_suite(
+            replicated_kv_suite(),
+        ))),
+        search_json: None,
+        checker_json: Some(checker),
+        shrink_json: Some("{\"kind\":\"signature-preserving\"}".to_string()),
+        failure_signature_json: Some(
+            "{\"type\":\"NotLinearizable\",\"model\":\"single-key-kv\"}".to_string(),
+        ),
+        coverage_json: None,
+        environment_json: Some("{\"kind\":\"cli-replicated-kv-example\"}".to_string()),
+    }
+}
+
+fn mini_raft_artifact() -> DebugArtifactV3 {
+    let run = mini_raft_smoke_world(0);
+    let checker = check_linearizable_with_budget(
+        &SingleKeyKv::new(None),
+        &single_key_kv_history(&run.history),
+        CheckBudget { max_steps: 10_000 },
+    )
+    .checker_artifact("single-key-kv")
+    .to_json();
+    DebugArtifactV3 {
+        title: "mini-raft stale read".to_string(),
+        causal_graph_json: Some(CausalGraph::from_run(&run).to_json()),
+        run,
+        experiment_json: Some(experiment_summary_to_json(&run_experiment_suite(
+            mini_raft_smoke_suite(),
+        ))),
+        search_json: None,
+        checker_json: Some(checker),
+        shrink_json: Some("{\"kind\":\"signature-preserving\"}".to_string()),
+        failure_signature_json: Some(
+            "{\"type\":\"NotLinearizable\",\"model\":\"single-key-kv\"}".to_string(),
+        ),
+        coverage_json: None,
+        environment_json: Some("{\"kind\":\"cli-mini-raft-example\"}".to_string()),
+    }
+}
+
+fn storage_fault_artifact() -> DebugArtifactV3 {
+    let run = storage_fault_world(0);
+    DebugArtifactV3 {
+        title: "storage bitrot".to_string(),
+        causal_graph_json: Some(CausalGraph::from_run(&run).to_json()),
+        run,
+        experiment_json: Some(experiment_summary_to_json(&run_experiment_suite(
+            storage_faults_suite(),
+        ))),
+        search_json: None,
+        checker_json: None,
+        shrink_json: Some("{\"kind\":\"storage-fault\"}".to_string()),
+        failure_signature_json: Some(
+            "{\"type\":\"StorageCorruption\",\"label\":\"bitrot\"}".to_string(),
+        ),
+        coverage_json: None,
+        environment_json: Some("{\"kind\":\"cli-storage-example\"}".to_string()),
+    }
+}
+
 fn stream_transcript_artifact() -> DebugArtifactV3 {
     let report = stream_transcript_report(0);
+    let graph = CausalGraph::from_run(&report).to_json();
     DebugArtifactV3 {
         title: "stream-transcript example".to_string(),
         run: report,
@@ -471,9 +575,7 @@ fn stream_transcript_artifact() -> DebugArtifactV3 {
             "{\"type\":\"InvariantViolated\",\"name\":\"stream-transcript\"}".to_string(),
         ),
         coverage_json: Some("[\"stream:deliver\",\"stream:duplicate\"]".to_string()),
-        causal_graph_json: Some(
-            "{\"nodes\":[\"enqueue\",\"duplicate\",\"deliver\"],\"edges\":[[\"enqueue\",\"deliver\"],[\"duplicate\",\"deliver\"]]}".to_string(),
-        ),
+        causal_graph_json: Some(graph),
         environment_json: Some("{\"kind\":\"cli-stream-example\"}".to_string()),
     }
 }
@@ -516,6 +618,47 @@ fn smoke_suite() -> ExperimentSuite {
     }
 }
 
+fn replicated_kv_suite() -> ExperimentSuite {
+    ExperimentSuite {
+        name: "replicated-kv",
+        cases: vec![(replicated_kv_case(), RecallPolicy::MustRecall)],
+    }
+}
+
+fn mini_raft_smoke_suite() -> ExperimentSuite {
+    ExperimentSuite {
+        name: "mini-raft-smoke",
+        cases: vec![(mini_raft_smoke_case(), RecallPolicy::MustRecall)],
+    }
+}
+
+fn storage_faults_suite() -> ExperimentSuite {
+    ExperimentSuite {
+        name: "storage-faults",
+        cases: vec![(storage_fault_case(), RecallPolicy::MustRecall)],
+    }
+}
+
+fn suite_by_name(name: &str) -> Option<ExperimentSuite> {
+    match name {
+        "smoke" => Some(smoke_suite()),
+        "replicated-kv" => Some(replicated_kv_suite()),
+        "mini-raft-smoke" => Some(mini_raft_smoke_suite()),
+        "storage-faults" => Some(storage_faults_suite()),
+        _ => None,
+    }
+}
+
+fn case_by_suite_name(name: &str) -> Option<ExperimentCase> {
+    match name {
+        "smoke" => Some(smoke_case()),
+        "replicated-kv" => Some(replicated_kv_case()),
+        "mini-raft-smoke" => Some(mini_raft_smoke_case()),
+        "storage-faults" => Some(storage_fault_case()),
+        _ => None,
+    }
+}
+
 fn smoke_case() -> ExperimentCase {
     ExperimentCase {
         name: "missing-message",
@@ -529,6 +672,54 @@ fn smoke_case() -> ExperimentCase {
         generate: dropped_message_world,
         replay: dropped_message_world_replay,
         oracle: missing_message_signature,
+    }
+}
+
+fn replicated_kv_case() -> ExperimentCase {
+    ExperimentCase {
+        name: "replicated-kv-read-from-stale-follower",
+        budget: ExperimentBudget {
+            seed_count: 32,
+            shrink: ShrinkConfig {
+                max_attempts: 100,
+                min_chunk_len: 2,
+            },
+        },
+        generate: replicated_kv_world,
+        replay: replicated_kv_world_replay,
+        oracle: single_key_signature,
+    }
+}
+
+fn mini_raft_smoke_case() -> ExperimentCase {
+    ExperimentCase {
+        name: "mini-raft-follower-stale-read",
+        budget: ExperimentBudget {
+            seed_count: 32,
+            shrink: ShrinkConfig {
+                max_attempts: 100,
+                min_chunk_len: 2,
+            },
+        },
+        generate: mini_raft_smoke_world,
+        replay: mini_raft_smoke_world_replay,
+        oracle: protocol_history_signature,
+    }
+}
+
+fn storage_fault_case() -> ExperimentCase {
+    ExperimentCase {
+        name: "storage-bitrot-smoke",
+        budget: ExperimentBudget {
+            seed_count: 4,
+            shrink: ShrinkConfig {
+                max_attempts: 10,
+                min_chunk_len: 2,
+            },
+        },
+        generate: storage_fault_world,
+        replay: storage_fault_world_replay,
+        oracle: storage_fault_signature,
     }
 }
 
@@ -558,10 +749,75 @@ fn run_dropped_message(mut world: World) -> RunReport {
     world.run()
 }
 
+fn replicated_kv_world(seed: u64) -> RunReport {
+    run_replicated_kv(World::with_config(seed, protocol_config()))
+}
+
+fn replicated_kv_world_replay(seed: u64, tape: Vec<u64>) -> RunReport {
+    run_replicated_kv(World::replay(seed, tape, protocol_config()))
+}
+
+fn run_replicated_kv(mut world: World) -> RunReport {
+    let config = KvConfig::with_bug(KvBugVariant::ReadFromStaleFollower);
+    world.add_nodes(3, move |env: SimEnv| run_primary_backup_kv(env, config));
+    world.add_node(4, move |env: SimEnv| async move {
+        for op in run_primary_backup_kv_client(env.clone(), config).await {
+            env.record(op.to_history_line());
+        }
+    });
+    world.run()
+}
+
+fn mini_raft_smoke_world(seed: u64) -> RunReport {
+    run_mini_raft_smoke(World::with_config(seed, protocol_config()))
+}
+
+fn mini_raft_smoke_world_replay(seed: u64, tape: Vec<u64>) -> RunReport {
+    run_mini_raft_smoke(World::replay(seed, tape, protocol_config()))
+}
+
+fn run_mini_raft_smoke(mut world: World) -> RunReport {
+    let config = MiniRaftConfig::with_bug(RaftBugVariant::FollowerStaleRead);
+    world.add_nodes(3, move |env: SimEnv| run_mini_raft(env, config));
+    world.add_node(4, move |env: SimEnv| async move {
+        for op in run_mini_raft_kv_client(env.clone(), config).await {
+            env.record(op.to_history_line());
+        }
+    });
+    world.run()
+}
+
+fn storage_fault_world(seed: u64) -> RunReport {
+    run_storage_fault(World::with_config(seed, protocol_config()))
+}
+
+fn storage_fault_world_replay(seed: u64, tape: Vec<u64>) -> RunReport {
+    run_storage_fault(World::replay(seed, tape, protocol_config()))
+}
+
+fn run_storage_fault(mut world: World) -> RunReport {
+    world.add_node(0, |env: SimEnv| async move {
+        let storage = env.storage();
+        let _ = storage.write_at(0, b"ok").await;
+        let _ = storage.flush().await;
+        let mut bytes = [0u8; 2];
+        let _ = storage.read_at(0, &mut bytes).await;
+        env.record("storage-corruption:bitrot");
+    });
+    world.run()
+}
+
 fn config() -> WorldConfig {
     WorldConfig {
         horizon_ns: 100_000_000,
         max_events: 10_000,
+    }
+}
+
+fn protocol_config() -> WorldConfig {
+    WorldConfig {
+        horizon_ns: 2_000_000_000,
+        max_events: 20_000,
     }
 }
 
@@ -571,6 +827,63 @@ fn missing_message_signature(report: &RunReport) -> Option<FailureSignature> {
         .iter()
         .any(|entry| entry == "missing-message")
         .then(|| FailureSignature::InvariantViolated("missing-message".to_string()))
+}
+
+fn protocol_history_signature(report: &RunReport) -> Option<FailureSignature> {
+    let log_history = append_log_history(&report.history);
+    if !log_history.is_empty() {
+        let result = check_linearizable_with_budget(
+            &AppendOnlyLog::new(Vec::<String>::new()),
+            &log_history,
+            CheckBudget { max_steps: 10_000 },
+        );
+        return linearizability_signature("append-only-log", &result);
+    }
+    single_key_signature(report)
+}
+
+fn single_key_signature(report: &RunReport) -> Option<FailureSignature> {
+    let result = check_linearizable_with_budget(
+        &SingleKeyKv::new(None),
+        &single_key_kv_history(&report.history),
+        CheckBudget { max_steps: 10_000 },
+    );
+    linearizability_signature("single-key-kv", &result)
+}
+
+fn storage_fault_signature(report: &RunReport) -> Option<FailureSignature> {
+    report
+        .history
+        .iter()
+        .any(|entry| entry == "storage-corruption:bitrot")
+        .then(|| FailureSignature::StorageCorruption("bitrot".to_string()))
+}
+
+fn parse_suite_and_out(args: &[String], default_suite: &str) -> (String, Option<String>) {
+    let mut suite = default_suite.to_string();
+    let mut out = None;
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--suite" => {
+                idx += 1;
+                if let Some(value) = args.get(idx) {
+                    suite = value.clone();
+                }
+            }
+            value => out = Some(value.to_string()),
+        }
+        idx += 1;
+    }
+    (suite, out)
+}
+
+fn unsupported_suite(out: Option<String>, suite: &str) -> ExitCode {
+    let json = format!(
+        "{{\"schema_version\":3,\"ok\":false,\"unsupported_suite\":\"{}\",\"supported_suites\":[\"smoke\",\"replicated-kv\",\"mini-raft-smoke\",\"storage-faults\"],\"note\":\"test targets are the source of truth for full benchmark gates\"}}",
+        escape_json(suite)
+    );
+    write_or_print(out.as_deref(), &json)
 }
 
 fn parse_tape(value: &str) -> Vec<u64> {
@@ -625,8 +938,8 @@ fn print_help() {
         "usage:
   detersim doctor
   detersim init-sut <directory>
-  detersim run-suite [out.json]
-  detersim search [--suite smoke] [--budget n] [--strategy random|coverage-guided|failure-directed] [out.json]
+  detersim run-suite [--suite smoke|replicated-kv|mini-raft-smoke|storage-faults] [out.json]
+  detersim search [--suite smoke|replicated-kv|mini-raft-smoke|storage-faults] [--budget n] [--strategy random|coverage-guided|failure-directed] [--compare] [out.json]
   detersim replay <seed> <comma-separated-tape>
   detersim shrink [out.json]
   detersim render [seed] [out.html]

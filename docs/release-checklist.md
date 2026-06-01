@@ -36,20 +36,27 @@ cargo test -p detersim-sim --test mini_raft_recall
 cargo test -p detersim-shrink --test label_aware_shrink
 cargo test -p detersim-viz --test debug_artifact
 cargo test -p detersim-search --test coverage_guided_search
+cargo test -p detersim-search --test search_comparison
 cargo test -p detersim-check --test checker_v3_models
 cargo test -p detersim-net --test stream_api
 cargo test -p detersim-viz --test debug_artifact_v3
+cargo test -p detersim-viz --test causal_artifact_v3
 cargo test -p detersim-cli --test cli_smoke
 cargo test -p detersim-cli --test cli_e2e
+cargo test -p detersim-cli --test cli_benchmark_flow
 cargo run -p detersim-cli -- doctor
 cargo run -p detersim-testkit --example v3_artifacts
+cargo run -p detersim-cli -- run-suite --suite replicated-kv
+cargo run -p detersim-cli -- search --suite replicated-kv --budget 500 --strategy coverage-guided
 cargo doc --workspace --no-deps
 ```
 
 ## Artifact check
 
 - At least one Replicated KV failure has JSON and HTML artifacts.
-- At least one Mini-Raft failure has a reproducible trace and protocol label.
+- At least one Mini-Raft failure has checker-backed history or a normalized
+  invariant signature.
+- At least one schema-v3 artifact includes a deterministic causal graph.
 - Shrink report records original length, minimized length, attempts, accepted
   removals, and signature preservation.
 - V2 alpha tag command:

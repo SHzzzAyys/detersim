@@ -19,6 +19,8 @@ jobs:
         run: cargo test -p detersim-testkit --test experiment_suite
       - name: coverage guided search
         run: cargo test -p detersim-search --test coverage_guided_search
+      - name: search comparison
+        run: cargo test -p detersim-search --test search_comparison
       - name: checker v3 models
         run: cargo test -p detersim-check --test checker_v3_models
       - name: replicated kv recall
@@ -34,13 +36,17 @@ jobs:
       - name: label-aware shrink and debug artifacts
         run: |
           cargo test -p detersim-shrink --test label_aware_shrink
+          cargo test -p detersim-shrink --test signature_preserving_shrink
           cargo test -p detersim-viz --test debug_artifact
           cargo test -p detersim-viz --test debug_artifact_v3
+          cargo test -p detersim-viz --test causal_artifact_v3
       - name: cli smoke and coverage search
         run: |
           cargo test -p detersim-cli --test cli_smoke
           cargo test -p detersim-cli --test cli_e2e
-          cargo run -p detersim-cli -- search --suite smoke --budget 5000 --strategy coverage-guided
+          cargo test -p detersim-cli --test cli_benchmark_flow
+          cargo run -p detersim-cli -- search --suite replicated-kv --budget 5000 --strategy coverage-guided
+          cargo run -p detersim-cli -- search --suite replicated-kv --budget 5000 --compare
           cargo run -p detersim-cli -- render --examples target/detersim-artifacts/v3
           cargo run -p detersim-testkit --example v3_artifacts
       - name: 10k release determinism soak

@@ -42,6 +42,7 @@ pub struct ShrinkOutcome<S> {
     pub signature_preserved: bool,
     pub report: ShrinkReport,
     pub effectiveness: ShrinkEffectiveness,
+    pub removed_labels: Vec<RemovedLabel>,
 }
 
 pub struct SignaturePreservingShrink;
@@ -79,6 +80,53 @@ impl SignaturePreservingShrink {
             signature_preserved,
             report,
             effectiveness,
+            removed_labels: Vec::new(),
+        }
+    }
+
+    pub fn run_label_aware<S, L, F>(
+        tape: &[u64],
+        labels: &[L],
+        mut classify: F,
+        config: ShrinkConfig,
+    ) -> ShrinkOutcome<S>
+    where
+        S: Clone + Eq,
+        L: AsRef<str>,
+        F: FnMut(&[u64]) -> Option<S>,
+    {
+        let original_signature = classify(tape);
+        let label_report = if let Some(signature) = original_signature.clone() {
+            shrink_tape_label_aware_with_config(
+                tape,
+                labels,
+                |candidate| classify(candidate) == Some(signature.clone()),
+                config,
+            )
+        } else {
+            LabelAwareShrinkReport {
+                shrink: ShrinkReport {
+                    original_len: tape.len(),
+                    minimized: tape.to_vec(),
+                    kept_indices: (0..tape.len()).collect(),
+                    attempts: 1,
+                    reproduced: false,
+                    accepted_removals: 0,
+                },
+                removed_labels: Vec::new(),
+            }
+        };
+        let minimized_signature = classify(&label_report.shrink.minimized);
+        let signature_preserved =
+            original_signature.is_some() && minimized_signature == original_signature;
+        let effectiveness = ShrinkEffectiveness::from_report(&label_report.shrink);
+        ShrinkOutcome {
+            original_signature,
+            minimized_signature,
+            signature_preserved,
+            report: label_report.shrink,
+            effectiveness,
+            removed_labels: label_report.removed_labels,
         }
     }
 }

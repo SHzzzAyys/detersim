@@ -33,6 +33,109 @@ pub struct DebugArtifactV3 {
     pub environment_json: Option<String>,
 }
 
+/// Stable causal graph embedded in schema-v3 debug artifacts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CausalGraph {
+    pub nodes: Vec<CausalNode>,
+    pub edges: Vec<CausalEdge>,
+}
+
+/// One stable causal graph node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CausalNode {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+}
+
+/// One stable causal graph edge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CausalEdge {
+    pub from: String,
+    pub to: String,
+    pub kind: String,
+}
+
+impl CausalGraph {
+    /// Build a deterministic graph from run trace, nemesis trace, and history.
+    pub fn from_run(report: &RunReport) -> Self {
+        let mut nodes = Vec::new();
+        for (idx, line) in report.nemesis_trace.iter().enumerate() {
+            nodes.push(CausalNode {
+                id: format!("nemesis-{idx}"),
+                kind: "nemesis".to_string(),
+                label: line.clone(),
+            });
+        }
+        for (idx, line) in report.trace.iter().enumerate() {
+            nodes.push(CausalNode {
+                id: format!("trace-{idx}"),
+                kind: trace_kind(line).to_string(),
+                label: line.clone(),
+            });
+        }
+        for (idx, line) in report.history.iter().enumerate() {
+            nodes.push(CausalNode {
+                id: format!("history-{idx}"),
+                kind: "history".to_string(),
+                label: line.clone(),
+            });
+        }
+
+        let mut edges = Vec::new();
+        for idx in 1..report.trace.len() {
+            edges.push(CausalEdge {
+                from: format!("trace-{}", idx - 1),
+                to: format!("trace-{idx}"),
+                kind: "trace-order".to_string(),
+            });
+        }
+        for idx in 0..report.history.len() {
+            if !report.trace.is_empty() {
+                edges.push(CausalEdge {
+                    from: format!("trace-{}", report.trace.len() - 1),
+                    to: format!("history-{idx}"),
+                    kind: "observed-as".to_string(),
+                });
+            }
+        }
+        Self { nodes, edges }
+    }
+
+    /// Serialize the graph as schema-versioned JSON.
+    pub fn to_json(&self) -> String {
+        let nodes: Vec<String> = self
+            .nodes
+            .iter()
+            .map(|node| {
+                format!(
+                    "{{\"id\":\"{}\",\"kind\":\"{}\",\"label\":\"{}\"}}",
+                    escape_json(&node.id),
+                    escape_json(&node.kind),
+                    escape_json(&node.label)
+                )
+            })
+            .collect();
+        let edges: Vec<String> = self
+            .edges
+            .iter()
+            .map(|edge| {
+                format!(
+                    "{{\"from\":\"{}\",\"to\":\"{}\",\"kind\":\"{}\"}}",
+                    escape_json(&edge.from),
+                    escape_json(&edge.to),
+                    escape_json(&edge.kind)
+                )
+            })
+            .collect();
+        format!(
+            "{{\"schema_version\":3,\"nodes\":[{}],\"edges\":[{}]}}",
+            nodes.join(","),
+            edges.join(",")
+        )
+    }
+}
+
 pub fn run_report_to_json(report: &RunReport) -> String {
     format!(
         "{{\"schema_version\":2,\"seed\":{},\"dispatched\":{},\"aborted\":{},\"deadlocked\":{},\"trace\":{},\"history\":{},\"coverage_signals\":{},\"nemesis\":{},\"nemesis_trace\":{},\"tape\":{},\"tape_events\":{},\"tape_replaying\":{},\"tape_input_len\":{},\"tape_cursor\":{},\"tape_consumed_all\":{},\"tape_exhausted\":{}}}",
@@ -153,6 +256,18 @@ fn tape_events_json(report: &RunReport) -> String {
         })
         .collect();
     format!("[{}]", items.join(","))
+}
+
+fn trace_kind(line: &str) -> &str {
+    if line.contains("deliver ") {
+        "message"
+    } else if line.contains("timer") || line.contains("sleep") {
+        "timer"
+    } else if line.contains("storage") {
+        "storage"
+    } else {
+        "trace"
+    }
 }
 
 fn option_raw_json(value: Option<&str>) -> String {
