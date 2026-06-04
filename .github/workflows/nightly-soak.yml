@@ -17,10 +17,14 @@ jobs:
         run: cargo test -p detersim-testkit --test experiment_matrix
       - name: experiment suite
         run: cargo test -p detersim-testkit --test experiment_suite
+      - name: experiment suite manifest
+        run: cargo test -p detersim-testkit --test experiment_suite_manifest
       - name: coverage guided search
         run: cargo test -p detersim-search --test coverage_guided_search
       - name: search comparison
         run: cargo test -p detersim-search --test search_comparison
+      - name: suite search comparison
+        run: cargo test -p detersim-search --test suite_search_comparison
       - name: checker v3 models
         run: cargo test -p detersim-check --test checker_v3_models
       - name: replicated kv recall
@@ -40,13 +44,18 @@ jobs:
           cargo test -p detersim-viz --test debug_artifact
           cargo test -p detersim-viz --test debug_artifact_v3
           cargo test -p detersim-viz --test causal_artifact_v3
+          cargo test -p detersim-viz --test artifact_schema_compat
       - name: cli smoke and coverage search
         run: |
           cargo test -p detersim-cli --test cli_smoke
           cargo test -p detersim-cli --test cli_e2e
           cargo test -p detersim-cli --test cli_benchmark_flow
+          cargo test -p detersim-cli --test cli_artifact_workflow
           cargo run -p detersim-cli -- search --suite replicated-kv --budget 5000 --strategy coverage-guided
-          cargo run -p detersim-cli -- search --suite replicated-kv --budget 5000 --compare
+          cargo run -p detersim-cli -- search --suite replicated-kv --budget 5000 --compare --out target/detersim-artifacts/replicated-kv-search.json
+          cargo run -p detersim-cli -- search --suite mini-raft-smoke --budget 10000 --compare --out target/detersim-artifacts/mini-raft-search.json
+          cargo run -p detersim-cli -- shrink --case missing-message --seed 0 --out target/detersim-artifacts/missing-message-shrink.json
+          cargo run -p detersim-cli -- render --artifact target/detersim-artifacts/missing-message-shrink.json --out target/detersim-artifacts/missing-message-shrink.html
           cargo run -p detersim-cli -- render --examples target/detersim-artifacts/v3
           cargo run -p detersim-testkit --example v3_artifacts
       - name: 10k release determinism soak

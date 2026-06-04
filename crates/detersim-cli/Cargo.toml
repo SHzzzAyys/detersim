@@ -8,12 +8,13 @@ readme = "../../README.md"
 description = "Local command-line helpers for running DeterSim suites and artifacts."
 
 [dependencies]
-detersim-check = { path = "../detersim-check" }
-detersim-core = { path = "../detersim-core" }
-detersim-net = { path = "../detersim-net" }
-detersim-protocols = { path = "../detersim-protocols" }
-detersim-search = { path = "../detersim-search" }
-detersim-shrink = { path = "../detersim-shrink" }
-detersim-sim = { path = "../detersim-sim" }
-detersim-testkit = { path = "../detersim-testkit" }
-detersim-viz = { path = "../detersim-viz" }
+detersim-check = { path = "../detersim-check", version = "0.1.0" }
+detersim-core = { path = "../detersim-core", version = "0.1.0" }
+detersim-net = { path = "../detersim-net", version = "0.1.0" }
+detersim-nemesis = { path = "../detersim-nemesis", version = "0.1.0" }
+detersim-protocols = { path = "../detersim-protocols", version = "0.1.0" }
+detersim-search = { path = "../detersim-search", version = "0.1.0" }
+detersim-shrink = { path = "../detersim-shrink", version = "0.1.0" }
+detersim-sim = { path = "../detersim-sim", version = "0.1.0" }
+detersim-testkit = { path = "../detersim-testkit", version = "0.1.0" }
+detersim-viz = { path = "../detersim-viz", version = "0.1.0" }

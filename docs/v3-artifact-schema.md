@@ -16,3 +16,8 @@ sections:
 
 `detersim-viz` still renders v2 artifacts. V3 HTML remains self-contained and
 does not load remote scripts, fonts, or services.
+
+V3.2 extends graph contents without changing `schema_version`: message
+delivery/drop edges, nemesis impact edges, checker-conflict edges, and shrink
+preservation edges are all represented inside the existing `nodes` / `edges`
+arrays.

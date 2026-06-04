@@ -8,4 +8,4 @@ readme = "../../README.md"
 description = "Local JSON and HTML trace export helpers for detersim."
 
 [dependencies]
-detersim-sim = { path = "../detersim-sim" }
+detersim-sim = { path = "../detersim-sim", version = "0.1.0" }

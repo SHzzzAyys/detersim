@@ -143,20 +143,23 @@ files and assemble public APIs into user workflows.
 # Check local toolchain and sample deterministic flow.
 cargo run -p detersim-cli -- doctor
 
-# Run the built-in smoke suite and print JSON.
-cargo run -p detersim-cli -- run-suite
+# Run built-in suites and write suite-level JSON.
+cargo run -p detersim-cli -- run-suite --suite replicated-kv --out target/detersim-artifacts/replicated-kv-suite.json
 
-# Search for high-signal seeds.
-cargo run -p detersim-cli -- search --budget 100 --strategy coverage-guided
+# Compare search strategies across a suite.
+cargo run -p detersim-cli -- search --suite mini-raft-smoke --compare --budget 1000 --out target/detersim-artifacts/mini-raft-search.json
 
 # Replay a generated tape.
 cargo run -p detersim-cli -- replay 0 12,34,56
 
-# Shrink a built-in failing run and print a debug artifact JSON.
-cargo run -p detersim-cli -- shrink
+# Shrink a named failing case and write a schema-v3 debug artifact JSON.
+cargo run -p detersim-cli -- shrink --case missing-message --seed 0 --out target/detersim-artifacts/missing-message-shrink.json
 
-# Render a static HTML artifact.
-cargo run -p detersim-cli -- render 0 target/detersim-artifacts/missing-message.html
+# Render an artifact JSON to static HTML.
+cargo run -p detersim-cli -- render --artifact target/detersim-artifacts/missing-message-shrink.json --out target/detersim-artifacts/missing-message-shrink.html
+
+# Render built-in V3 examples and an index JSON.
+cargo run -p detersim-cli -- render --examples target/detersim-artifacts/v3
 
 # Produce a schema-v3 explanation artifact.
 cargo run -p detersim-cli -- explain target/detersim-artifacts/v3-explain.json
@@ -263,7 +266,8 @@ events, network drops, timers, task polls, and history classes.
 
 ```powershell
 cargo test -p detersim-search --test coverage_guided_search
-cargo run -p detersim-cli -- search --budget 5000 --strategy coverage-guided
+cargo test -p detersim-search --test suite_search_comparison
+cargo run -p detersim-cli -- search --suite replicated-kv --compare --budget 5000
 ```
 
 Search is only a discovery accelerator. A failure is accepted only after replay
@@ -297,7 +301,7 @@ crashes, restarts, and storage faults.
 
 ```powershell
 cargo test -p detersim-shrink --test label_aware_shrink
-cargo run -p detersim-cli -- shrink
+cargo run -p detersim-cli -- shrink --case missing-message --seed 0 --out target/detersim-artifacts/missing-message-shrink.json
 ```
 
 ## Checkers
@@ -460,10 +464,12 @@ V3 fast gates:
 
 ```powershell
 cargo test -p detersim-search --test coverage_guided_search
+cargo test -p detersim-search --test suite_search_comparison
 cargo test -p detersim-check --test checker_v3_models
 cargo test -p detersim-net --test stream_api
 cargo test -p detersim-viz --test debug_artifact_v3
 cargo test -p detersim-cli --test cli_smoke
+cargo test -p detersim-cli --test cli_artifact_workflow
 cargo run -p detersim-cli -- doctor
 ```
 
@@ -490,6 +496,8 @@ Manual full soak is available through `.github/workflows/full-soak.yml`.
   artifacts.
 - [`docs/status-v3.1-plan.md`](docs/status-v3.1-plan.md): V3.1 hardening
   status and gates.
+- [`docs/status-v3.2-plan.md`](docs/status-v3.2-plan.md): V3.2 adoption and
+  evidence hardening scope.
 - [`docs/mini-raft-checker-backed.md`](docs/mini-raft-checker-backed.md):
   Mini-Raft checker-backed and invariant-backed oracle split.
 - [`docs/search-benchmark-results.md`](docs/search-benchmark-results.md):

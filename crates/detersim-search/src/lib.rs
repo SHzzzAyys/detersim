@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 
 use detersim_sim::RunReport;
-use detersim_testkit::{ExperimentCase, FailureSignature};
+use detersim_testkit::{ExperimentCase, ExperimentSuite, FailureSignature};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Seed exploration strategy for an [`ExperimentCase`].
@@ -106,6 +106,15 @@ pub struct SearchComparisonReport {
     pub budget: SearchBudget,
     pub rows: Vec<StrategyComparison>,
     pub best_strategy: Option<SearchStrategy>,
+}
+
+/// Suite-level comparison across a deterministic list of experiment cases.
+#[derive(Clone, Debug)]
+pub struct SuiteSearchComparisonReport {
+    pub suite_name: &'static str,
+    pub budget: SearchBudget,
+    pub case_reports: Vec<SearchComparisonReport>,
+    pub strategy_wins: Vec<(SearchStrategy, u64)>,
 }
 
 pub fn run_search(
@@ -218,6 +227,40 @@ pub fn compare_search_strategies(
     }
 }
 
+/// Run several search strategies across every case in a suite.
+///
+/// The suite is borrowed so callers can keep using the same public suite
+/// construction functions for `run-suite` and `search --compare`. Policies are
+/// not interpreted here; this layer compares search evidence only.
+pub fn compare_search_suite(
+    suite: &ExperimentSuite,
+    strategies: &[SearchStrategy],
+    budget: SearchBudget,
+) -> SuiteSearchComparisonReport {
+    let case_reports: Vec<SearchComparisonReport> = suite
+        .cases
+        .iter()
+        .map(|(case, _policy)| compare_search_strategies(case, strategies, budget))
+        .collect();
+    let mut wins = Vec::<(SearchStrategy, u64)>::new();
+    for report in &case_reports {
+        if let Some(strategy) = report.best_strategy {
+            if let Some((_existing, count)) = wins.iter_mut().find(|(s, _)| *s == strategy) {
+                *count += 1;
+            } else {
+                wins.push((strategy, 1));
+            }
+        }
+    }
+    wins.sort_by_key(|(strategy, _)| strategy_rank(*strategy));
+    SuiteSearchComparisonReport {
+        suite_name: suite.name,
+        budget,
+        case_reports,
+        strategy_wins: wins,
+    }
+}
+
 /// Extract semantic coverage from a deterministic run report.
 ///
 /// This combines runtime-provided coverage signals, tape labels, and history
@@ -304,13 +347,40 @@ pub fn search_comparison_report_to_json(report: &SearchComparisonReport) -> Stri
     )
 }
 
+/// Serialize a suite-level search comparison as stable schema-versioned JSON.
+pub fn suite_search_comparison_report_to_json(report: &SuiteSearchComparisonReport) -> String {
+    let cases: Vec<String> = report
+        .case_reports
+        .iter()
+        .map(search_comparison_report_to_json)
+        .collect();
+    let wins: Vec<String> = report
+        .strategy_wins
+        .iter()
+        .map(|(strategy, count)| format!("{{\"strategy\":\"{strategy:?}\",\"wins\":{count}}}"))
+        .collect();
+    format!(
+        "{{\"schema_version\":3,\"suite\":\"{}\",\"seed_budget\":{},\"retain_candidates\":{},\"case_count\":{},\"strategy_wins\":[{}],\"cases\":[{}]}}",
+        escape_json(report.suite_name),
+        report.budget.seed_count,
+        report.budget.retain_candidates,
+        report.case_reports.len(),
+        wins.join(","),
+        cases.join(",")
+    )
+}
+
 impl StrategyComparison {
     fn strategy_rank(&self) -> u8 {
-        match self.strategy {
-            SearchStrategy::Random => 0,
-            SearchStrategy::CoverageGuided => 1,
-            SearchStrategy::FailureDirected => 2,
-        }
+        strategy_rank(self.strategy)
+    }
+}
+
+fn strategy_rank(strategy: SearchStrategy) -> u8 {
+    match strategy {
+        SearchStrategy::Random => 0,
+        SearchStrategy::CoverageGuided => 1,
+        SearchStrategy::FailureDirected => 2,
     }
 }
 

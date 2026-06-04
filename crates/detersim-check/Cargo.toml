@@ -8,4 +8,4 @@ readme = "../../README.md"
 description = "Invariant hooks and small-history linearizability checking for detersim."
 
 [dependencies]
-detersim-core = { path = "../detersim-core" }
+detersim-core = { path = "../detersim-core", version = "0.1.0" }

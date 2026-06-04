@@ -8,11 +8,11 @@ readme = "../../README.md"
 description = "Reusable deterministic test harness helpers for detersim users."
 
 [dependencies]
-detersim-check = { path = "../detersim-check" }
-detersim-core = { path = "../detersim-core" }
-detersim-net = { path = "../detersim-net" }
-detersim-nemesis = { path = "../detersim-nemesis" }
-detersim-protocols = { path = "../detersim-protocols" }
-detersim-shrink = { path = "../detersim-shrink" }
-detersim-sim = { path = "../detersim-sim" }
-detersim-viz = { path = "../detersim-viz" }
+detersim-check = { path = "../detersim-check", version = "0.1.0" }
+detersim-core = { path = "../detersim-core", version = "0.1.0" }
+detersim-net = { path = "../detersim-net", version = "0.1.0" }
+detersim-nemesis = { path = "../detersim-nemesis", version = "0.1.0" }
+detersim-protocols = { path = "../detersim-protocols", version = "0.1.0" }
+detersim-shrink = { path = "../detersim-shrink", version = "0.1.0" }
+detersim-sim = { path = "../detersim-sim", version = "0.1.0" }
+detersim-viz = { path = "../detersim-viz", version = "0.1.0" }
