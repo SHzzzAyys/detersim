@@ -106,6 +106,12 @@ pub struct SearchComparisonReport {
     pub budget: SearchBudget,
     pub rows: Vec<StrategyComparison>,
     pub best_strategy: Option<SearchStrategy>,
+    pub strategy_winner: Option<SearchStrategy>,
+    pub median_first_failing_rank: Option<u64>,
+    pub p90_first_failing_rank: Option<u64>,
+    pub no_failure_count: usize,
+    pub dense_case: bool,
+    pub sparse_case: bool,
 }
 
 /// Suite-level comparison across a deterministic list of experiment cases.
@@ -219,11 +225,33 @@ pub fn compare_search_strategies(
         })
         .map(|row| row.strategy);
 
+    let ranks: Vec<u64> = rows
+        .iter()
+        .filter_map(|row| row.first_failing_rank)
+        .collect();
+    let no_failure_count = rows
+        .iter()
+        .filter(|row| row.first_failing_rank.is_none())
+        .count();
+    let dense_case = !rows.is_empty()
+        && rows
+            .iter()
+            .all(|row| row.failures_observed == row.seeds_attempted);
+    let sparse_case = rows
+        .iter()
+        .any(|row| row.failures_observed > 0 && row.failures_observed < row.seeds_attempted);
+
     SearchComparisonReport {
         case_name: case.name,
         budget,
         rows,
         best_strategy,
+        strategy_winner: best_strategy,
+        median_first_failing_rank: percentile_rank(&ranks, 50),
+        p90_first_failing_rank: percentile_rank(&ranks, 90),
+        no_failure_count,
+        dense_case,
+        sparse_case,
     }
 }
 
@@ -338,11 +366,17 @@ pub fn search_comparison_report_to_json(report: &SearchComparisonReport) -> Stri
         })
         .collect();
     format!(
-        "{{\"schema_version\":3,\"case\":\"{}\",\"seed_budget\":{},\"retain_candidates\":{},\"best_strategy\":{},\"rows\":[{}]}}",
+        "{{\"schema_version\":3,\"case\":\"{}\",\"seed_budget\":{},\"retain_candidates\":{},\"best_strategy\":{},\"strategy_winner\":{},\"median_first_failing_rank\":{},\"p90_first_failing_rank\":{},\"no_failure_count\":{},\"dense_case\":{},\"sparse_case\":{},\"rows\":[{}]}}",
         escape_json(report.case_name),
         report.budget.seed_count,
         report.budget.retain_candidates,
         option_strategy(report.best_strategy),
+        option_strategy(report.strategy_winner),
+        option_u64(report.median_first_failing_rank),
+        option_u64(report.p90_first_failing_rank),
+        report.no_failure_count,
+        report.dense_case,
+        report.sparse_case,
         rows.join(",")
     )
 }
@@ -382,6 +416,17 @@ fn strategy_rank(strategy: SearchStrategy) -> u8 {
         SearchStrategy::CoverageGuided => 1,
         SearchStrategy::FailureDirected => 2,
     }
+}
+
+fn percentile_rank(values: &[u64], percentile: u64) -> Option<u64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let rank = (sorted.len() as u64 * percentile).div_ceil(100).max(1);
+    let idx = (rank - 1).min(sorted.len() as u64 - 1) as usize;
+    sorted.get(idx).copied()
 }
 
 fn seed_order(strategy: SearchStrategy, seed_count: u64) -> Vec<u64> {

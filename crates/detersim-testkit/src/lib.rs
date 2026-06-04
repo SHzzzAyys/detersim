@@ -181,6 +181,26 @@ pub enum ArtifactPolicy {
     Never,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Whether a case is a correct control, an injected bug, or evidence-only.
+pub enum ControlKind {
+    NegativeControl,
+    PositiveControl,
+    PlantBug,
+    Informational,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What kind of evidence a case contributes to the suite.
+pub enum EvidenceClass {
+    Reporting,
+    Replay,
+    Shrink,
+    SearchDense,
+    SearchSparse,
+    Artifact,
+}
+
 #[derive(Clone, Debug)]
 /// Public description of one experiment case inside a suite.
 ///
@@ -195,6 +215,11 @@ pub struct ExperimentCaseManifest {
     pub expected_signature: Option<FailureSignature>,
     pub seed_count: u64,
     pub artifact_policy: ArtifactPolicy,
+    pub case_family: &'static str,
+    pub bug_variant: &'static str,
+    pub control_kind: ControlKind,
+    pub expected_recall_rate: Option<f64>,
+    pub evidence_class: EvidenceClass,
 }
 
 #[derive(Clone, Debug)]
@@ -228,6 +253,10 @@ pub struct ExperimentSummary {
     pub required_recalled: usize,
     pub required_not_recalled: usize,
     pub policy_failures: usize,
+    pub control_failures: usize,
+    pub oracle_inconclusive_count: usize,
+    pub replay_mismatch_count: usize,
+    pub shrink_mismatch_count: usize,
     pub matrix: ExperimentMatrixReport,
     pub artifacts: Vec<ExperimentArtifact>,
     pub results: Vec<RecallResult>,
@@ -505,6 +534,7 @@ pub fn run_experiment_suite(suite: ExperimentSuite) -> ExperimentSummary {
     let mut required_recalled = 0usize;
     let mut required_not_recalled = 0usize;
     let mut policy_failures = 0usize;
+    let mut control_failures = 0usize;
 
     for (result, policy) in results.iter().zip(policies.iter()) {
         match policy {
@@ -518,11 +548,31 @@ pub fn run_experiment_suite(suite: ExperimentSuite) -> ExperimentSummary {
                 required_not_recalled += 1;
                 if result.report().failures_observed != 0 {
                     policy_failures += 1;
+                    control_failures += 1;
                 }
             }
             RecallPolicy::Informational => {}
         }
     }
+    let replay_mismatch_count = results
+        .iter()
+        .filter(|result| {
+            let report = result.report();
+            report.failure_signature.is_some()
+                && (!report.replay_trace_identical
+                    || !report.replay_history_identical
+                    || !report.replay_nemesis_identical
+                    || !report.replay_byte_identical
+                    || !report.replay_matched_signature)
+        })
+        .count();
+    let shrink_mismatch_count = results
+        .iter()
+        .filter(|result| {
+            let report = result.report();
+            report.failure_signature.is_some() && !report.minimized_matched_signature
+        })
+        .count();
 
     let artifacts = results
         .iter()
@@ -544,6 +594,10 @@ pub fn run_experiment_suite(suite: ExperimentSuite) -> ExperimentSummary {
         required_recalled,
         required_not_recalled,
         policy_failures,
+        control_failures,
+        oracle_inconclusive_count: 0,
+        replay_mismatch_count,
+        shrink_mismatch_count,
         matrix,
         artifacts,
         results,
@@ -674,12 +728,16 @@ pub fn experiment_summary_to_json(summary: &ExperimentSummary) -> String {
         .map(|result| experiment_report_to_json(result.report()))
         .collect();
     format!(
-        "{{\"schema_version\":2,\"name\":\"{}\",\"total_cases\":{},\"required_recalled\":{},\"required_not_recalled\":{},\"policy_failures\":{},\"matrix\":{},\"artifacts\":[{}],\"results\":[{}]}}",
+        "{{\"schema_version\":2,\"name\":\"{}\",\"total_cases\":{},\"required_recalled\":{},\"required_not_recalled\":{},\"policy_failures\":{},\"control_failures\":{},\"oracle_inconclusive_count\":{},\"replay_mismatch_count\":{},\"shrink_mismatch_count\":{},\"matrix\":{},\"artifacts\":[{}],\"results\":[{}]}}",
         escape_json(summary.name),
         summary.total_cases,
         summary.required_recalled,
         summary.required_not_recalled,
         summary.policy_failures,
+        summary.control_failures,
+        summary.oracle_inconclusive_count,
+        summary.replay_mismatch_count,
+        summary.shrink_mismatch_count,
         experiment_matrix_report_to_json(&summary.matrix),
         artifacts.join(","),
         results.join(",")
@@ -693,13 +751,18 @@ pub fn experiment_suite_manifest_to_json(manifest: &ExperimentSuiteManifest) -> 
         .iter()
         .map(|case| {
             format!(
-                "{{\"name\":\"{}\",\"recall_policy\":\"{}\",\"oracle\":\"{}\",\"expected_signature\":{},\"seed_count\":{},\"artifact_policy\":\"{}\"}}",
+                "{{\"name\":\"{}\",\"recall_policy\":\"{}\",\"oracle\":\"{}\",\"expected_signature\":{},\"seed_count\":{},\"artifact_policy\":\"{}\",\"case_family\":\"{}\",\"bug_variant\":\"{}\",\"control_kind\":\"{}\",\"expected_recall_rate\":{},\"evidence_class\":\"{}\"}}",
                 escape_json(case.name),
                 recall_policy_label(case.recall_policy),
                 oracle_kind_label(case.oracle),
                 option_signature_json(case.expected_signature.as_ref()),
                 case.seed_count,
-                artifact_policy_label(case.artifact_policy)
+                artifact_policy_label(case.artifact_policy),
+                escape_json(case.case_family),
+                escape_json(case.bug_variant),
+                control_kind_label(case.control_kind),
+                option_f64(case.expected_recall_rate),
+                evidence_class_label(case.evidence_class)
             )
         })
         .collect();
@@ -762,6 +825,26 @@ fn artifact_policy_label(policy: ArtifactPolicy) -> &'static str {
         ArtifactPolicy::Always => "always",
         ArtifactPolicy::OnFailure => "on_failure",
         ArtifactPolicy::Never => "never",
+    }
+}
+
+fn control_kind_label(kind: ControlKind) -> &'static str {
+    match kind {
+        ControlKind::NegativeControl => "negative_control",
+        ControlKind::PositiveControl => "positive_control",
+        ControlKind::PlantBug => "plant_bug",
+        ControlKind::Informational => "informational",
+    }
+}
+
+fn evidence_class_label(class: EvidenceClass) -> &'static str {
+    match class {
+        EvidenceClass::Reporting => "reporting",
+        EvidenceClass::Replay => "replay",
+        EvidenceClass::Shrink => "shrink",
+        EvidenceClass::SearchDense => "search_dense",
+        EvidenceClass::SearchSparse => "search_sparse",
+        EvidenceClass::Artifact => "artifact",
     }
 }
 

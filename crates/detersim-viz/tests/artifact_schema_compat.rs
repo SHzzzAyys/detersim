@@ -1,7 +1,8 @@
 use detersim_sim::scenarios::{bitrot_wal_world, partitioned_dual_leader_world};
 use detersim_viz::{
-    debug_artifact_schema_version, debug_artifact_to_json, debug_artifact_v3_to_json,
-    raw_debug_artifact_html, CausalGraph, DebugArtifact, DebugArtifactV3,
+    debug_artifact_schema_version, debug_artifact_to_json, debug_artifact_v3_html,
+    debug_artifact_v3_to_json, raw_debug_artifact_html, CausalGraph, DebugArtifact,
+    DebugArtifactV3,
 };
 
 #[test]
@@ -33,6 +34,16 @@ fn schema_detection_accepts_v2_v3_and_v32_causal_artifacts() {
         .edges
         .iter()
         .any(|edge| edge.kind == "nemesis-affects-history"));
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|edge| edge.kind == "delivery-wakes-next-trace")
+            || graph
+                .edges
+                .iter()
+                .any(|edge| edge.kind == "preserves-failure")
+    );
 
     let v3 = DebugArtifactV3 {
         title: "v3.2".to_string(),
@@ -51,6 +62,8 @@ fn schema_detection_accepts_v2_v3_and_v32_causal_artifacts() {
     let v3_json = debug_artifact_v3_to_json(&v3);
     assert_eq!(debug_artifact_schema_version(&v3_json), Some(3));
     assert!(v3_json.contains("\"causal_graph\""));
+    let v3_html = debug_artifact_v3_html(&v3);
+    assert!(v3_html.contains("message table"));
 
     let html = raw_debug_artifact_html("compat", &v3_json);
     assert!(html.contains("<!doctype html>"));

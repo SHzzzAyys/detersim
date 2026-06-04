@@ -5,9 +5,9 @@ claim is limited: these experiments recall known bug variants under deterministi
 budgets and produce replay/shrink/artifact data. They do not prove a protocol is
 correct.
 
-The test targets are the source of truth. V3.2 CLI suite mapping now covers the
-same beta benchmark families, but the explicit Rust targets remain the release
-gates for full evidence.
+The test targets are the source of truth. V3.3 CLI suite mapping now covers the
+same beta benchmark families plus sparse-discovery evidence, but the explicit
+Rust targets remain the release gates for full evidence.
 
 ## Partitioned Register Baseline
 
@@ -114,8 +114,8 @@ gates for full evidence.
   - `cargo run -p detersim-testkit --example v3_artifacts`
   - `cargo run -p detersim-cli -- render --examples target/detersim-artifacts/v3`
 - Limitations: CLI suite aliases now cover smoke, replicated KV, Mini-Raft
-  smoke, and storage faults. The explicit test targets remain the source of
-  truth for full benchmark gates.
+  smoke, storage faults, and sparse discovery. The explicit test targets remain
+  the source of truth for full benchmark gates.
 
 ## V3.1 Search Comparison
 
@@ -170,3 +170,42 @@ cargo run -p detersim-cli -- search --suite mini-raft-smoke --compare --budget 1
 Known limitation: most built-in bug variants are intentionally dense recall
 cases. They are strong tests for deterministic reporting and shrink preservation,
 but only sparse cases should be used to claim search efficiency improvements.
+
+## V3.3 Sparse Discovery Evidence
+
+V3.3 adds `sparse-discovery`, a CLI-facing suite with three deterministic sparse
+cases. These cases are synthetic harness cases rather than protocol expansions;
+their purpose is to test search evidence reporting and strategy comparison when
+not every seed fails.
+
+| Case | Failure condition | Why it is sparse | Expected evidence |
+| --- | --- | --- | --- |
+| `sparse-delayed-replication-stale-read` | selected seeds model delayed replication before a stale follower read | only part of the seed range reaches the stale-read window | coverage/failure directed strategies should not be worse than monotonic random order |
+| `sparse-crash-after-ack-before-flush` | selected seeds model crash timing after ack but before durable flush | failure requires a narrow crash point | comparison report records first failing rank and sparse classification |
+| `sparse-partition-heal-race` | selected seeds model partition heal interacting with message ordering | failure requires a specific ordering race | report distinguishes sparse search evidence from dense recall evidence |
+
+The currently observed smoke command:
+
+```powershell
+cargo run -p detersim-cli -- search --suite sparse-discovery --compare --budget 32
+```
+
+emits `dense_case:false` and `sparse_case:true` for each sparse case. In the
+local V3.3 run, `CoverageGuided` or `FailureDirected` won every sparse case at
+budget 32. This is a smoke result, not a statistical claim about all workloads.
+
+## V3.3 Adoption Evidence
+
+The adoption pack validates that an external user can start from generated
+templates and exercise the deterministic loop without private APIs:
+
+```powershell
+cargo run -p detersim-cli -- doctor --deep
+cargo run -p detersim-cli -- init-sut --name demo-message --template message target/demo-message
+cargo run -p detersim-cli -- init-sut --name demo-stream --template stream target/demo-stream
+cargo run -p detersim-cli -- init-sut --name demo-protocol --template protocol target/demo-protocol
+```
+
+The `protocol` template is the most important adoption test. It includes a
+primary-backup KV SUT, structured history, a `SingleKeyKv` oracle, a correct
+negative control, and a stale-follower-read plant-a-bug case.

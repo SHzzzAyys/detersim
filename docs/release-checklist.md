@@ -9,6 +9,9 @@
   `docs/crates-publishing.md` are linked from README.
 - `docs/benchmark-evidence-v3.md` reflects the current test targets.
 - `docs/status-v3.2-plan.md` reflects the current beta adoption/evidence scope.
+- `docs/cli-workflows.md`, `docs/template-contract.md`, and
+  `docs/tutorial-adopt-existing-sut.md` match the CLI command surface.
+- Dense recall cases are not described as search acceleration evidence.
 - Mini-Raft claims remain "minimal reference protocol", not production Raft.
 - Every public API added for the release has rustdoc.
 - Every deterministic SUT path is included in `scripts/lint_determinism.sh`.
@@ -50,13 +53,17 @@ cargo test -p detersim-cli --test cli_e2e
 cargo test -p detersim-cli --test cli_benchmark_flow
 cargo test -p detersim-cli --test cli_artifact_workflow
 cargo run -p detersim-cli -- doctor
+cargo run -p detersim-cli -- doctor --deep
 cargo run -p detersim-testkit --example v3_artifacts
 cargo run -p detersim-cli -- run-suite --suite replicated-kv --out target/detersim-artifacts/replicated-kv-suite.json
 cargo run -p detersim-cli -- search --suite replicated-kv --budget 500 --strategy coverage-guided
 cargo run -p detersim-cli -- search --suite mini-raft-smoke --compare --budget 1000
+cargo run -p detersim-cli -- search --suite sparse-discovery --compare --budget 32 --out target/detersim-artifacts/sparse-search.json
 cargo run -p detersim-cli -- shrink --case missing-message --seed 0 --out target/detersim-artifacts/missing-message-shrink.json
 cargo run -p detersim-cli -- render --artifact target/detersim-artifacts/missing-message-shrink.json --out target/detersim-artifacts/missing-message-shrink.html
+cargo run -p detersim-cli -- explain --artifact target/detersim-artifacts/missing-message-shrink.json --out target/detersim-artifacts/missing-message-explain.json
 cargo doc --workspace --no-deps
+cargo package --workspace --allow-dirty
 ```
 
 ## Artifact check
@@ -88,6 +95,20 @@ git tag -a v3.1.0-beta.1 -m "DeterSim v3.1.0-beta.1"
 git push origin v3.1.0-beta.1
 ```
 
+- V3.2 beta tag command:
+
+```powershell
+git tag -a v3.2.0-beta.1 -m "DeterSim v3.2.0-beta.1"
+git push origin v3.2.0-beta.1
+```
+
+- V3.3 beta tag command:
+
+```powershell
+git tag -a v3.3.0-beta.1 -m "DeterSim v3.3.0-beta.1"
+git push origin v3.3.0-beta.1
+```
+
 - Crates.io dry run before any publish:
 
 ```powershell
@@ -95,9 +116,26 @@ cargo package --workspace --allow-dirty
 cargo publish --dry-run -p detersim-core
 ```
 
+Dry-run dependency order:
+
+1. `detersim-core`
+2. `detersim-check`
+3. `detersim-nemesis`
+4. `detersim-net`
+5. `detersim-protocols`
+6. `detersim-shrink`
+7. `detersim-sim`
+8. `detersim-viz`
+9. `detersim-testkit`
+10. `detersim-search`
+11. `detersim-cli`
+
 ## Stop rules
 
 - Stop the release if same-seed trace equality fails.
 - Stop the release if a correct negative control produces `NotLinearizable`.
 - Stop the release if a plant-a-bug variant is not recalled within its budget.
 - Stop the release if determinism lint flags a real forbidden API.
+- Stop the release if a dense every-seed-fails case is used as search
+  acceleration evidence.
+- Stop the release if a generated template fails `cargo test`.

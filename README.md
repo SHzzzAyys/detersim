@@ -143,11 +143,18 @@ files and assemble public APIs into user workflows.
 # Check local toolchain and sample deterministic flow.
 cargo run -p detersim-cli -- doctor
 
+# Exercise template generation, template tests, and artifact rendering.
+cargo run -p detersim-cli -- doctor --deep
+
 # Run built-in suites and write suite-level JSON.
 cargo run -p detersim-cli -- run-suite --suite replicated-kv --out target/detersim-artifacts/replicated-kv-suite.json
 
 # Compare search strategies across a suite.
 cargo run -p detersim-cli -- search --suite mini-raft-smoke --compare --budget 1000 --out target/detersim-artifacts/mini-raft-search.json
+
+# Compare sparse discovery cases. These are the cases used for search
+# acceleration evidence.
+cargo run -p detersim-cli -- search --suite sparse-discovery --compare --budget 32 --out target/detersim-artifacts/sparse-search.json
 
 # Replay a generated tape.
 cargo run -p detersim-cli -- replay 0 12,34,56
@@ -161,16 +168,22 @@ cargo run -p detersim-cli -- render --artifact target/detersim-artifacts/missing
 # Render built-in V3 examples and an index JSON.
 cargo run -p detersim-cli -- render --examples target/detersim-artifacts/v3
 
-# Produce a schema-v3 explanation artifact.
-cargo run -p detersim-cli -- explain target/detersim-artifacts/v3-explain.json
+# Produce schema-v3 explanation JSON for an artifact.
+cargo run -p detersim-cli -- explain --artifact target/detersim-artifacts/missing-message-shrink.json --out target/detersim-artifacts/missing-message-explain.json
 
-# Create a minimal external SUT template.
-cargo run -p detersim-cli -- init-sut target/detersim-sut-template
+# Create minimal external SUT templates.
+cargo run -p detersim-cli -- init-sut --name demo-message --template message target/demo-message
+cargo run -p detersim-cli -- init-sut --name demo-stream --template stream target/demo-stream
+cargo run -p detersim-cli -- init-sut --name demo-protocol --template protocol target/demo-protocol
 ```
 
 The current CLI is a beta interface. Prefer using it for local workflows and
 examples, but do not treat the command surface as stable until the project
 publishes a non-beta API stability note.
+
+Supported built-in suites are `smoke`, `replicated-kv`, `mini-raft-smoke`,
+`storage-faults`, and `sparse-discovery`. Unsupported suites return explicit
+`unsupported_suite` JSON rather than a synthetic success.
 
 ## Writing a SUT
 
@@ -211,7 +224,9 @@ assert!(!report.deadlocked);
 ```
 
 For a complete walkthrough, see
-[`docs/tutorial-first-sut.md`](docs/tutorial-first-sut.md).
+[`docs/tutorial-first-sut.md`](docs/tutorial-first-sut.md),
+[`docs/tutorial-adopt-existing-sut.md`](docs/tutorial-adopt-existing-sut.md),
+and [`docs/cli-workflows.md`](docs/cli-workflows.md).
 
 ## Experiments
 
@@ -268,10 +283,15 @@ events, network drops, timers, task polls, and history classes.
 cargo test -p detersim-search --test coverage_guided_search
 cargo test -p detersim-search --test suite_search_comparison
 cargo run -p detersim-cli -- search --suite replicated-kv --compare --budget 5000
+cargo run -p detersim-cli -- search --suite sparse-discovery --compare --budget 32
 ```
 
 Search is only a discovery accelerator. A failure is accepted only after replay
 and signature-preserving shrink keep the same `FailureSignature`.
+
+Dense every-seed-fails cases are useful for reporting, replay, shrink, and
+artifact stability. Search acceleration claims should be based on sparse cases
+such as `sparse-discovery`.
 
 ## Replay and Shrinking
 
@@ -471,6 +491,8 @@ cargo test -p detersim-viz --test debug_artifact_v3
 cargo test -p detersim-cli --test cli_smoke
 cargo test -p detersim-cli --test cli_artifact_workflow
 cargo run -p detersim-cli -- doctor
+cargo run -p detersim-cli -- doctor --deep
+cargo run -p detersim-cli -- search --suite sparse-discovery --compare --budget 32
 ```
 
 Manual full soak is available through `.github/workflows/full-soak.yml`.
@@ -479,6 +501,8 @@ Manual full soak is available through `.github/workflows/full-soak.yml`.
 
 - [`docs/getting-started.md`](docs/getting-started.md): first orientation.
 - [`docs/tutorial-first-sut.md`](docs/tutorial-first-sut.md): write a small SUT.
+- [`docs/tutorial-adopt-existing-sut.md`](docs/tutorial-adopt-existing-sut.md):
+  adapt an existing protocol to the deterministic boundary.
 - [`docs/tutorial-debug-failure.md`](docs/tutorial-debug-failure.md): seed →
   replay → shrink → artifact.
 - [`docs/tutorial-coverage-guided-search.md`](docs/tutorial-coverage-guided-search.md):
@@ -486,6 +510,9 @@ Manual full soak is available through `.github/workflows/full-soak.yml`.
 - [`docs/tutorial-stream-api.md`](docs/tutorial-stream-api.md): deterministic
   stream helper usage.
 - [`docs/design-determinism.md`](docs/design-determinism.md): determinism model.
+- [`docs/cli-workflows.md`](docs/cli-workflows.md): CLI adoption commands.
+- [`docs/template-contract.md`](docs/template-contract.md): generated template
+  requirements.
 - [`docs/protocol-benchmarks.md`](docs/protocol-benchmarks.md): KV and
   Mini-Raft benchmark design.
 - [`docs/benchmark-evidence-v3.md`](docs/benchmark-evidence-v3.md): V3
@@ -498,6 +525,8 @@ Manual full soak is available through `.github/workflows/full-soak.yml`.
   status and gates.
 - [`docs/status-v3.2-plan.md`](docs/status-v3.2-plan.md): V3.2 adoption and
   evidence hardening scope.
+- [`docs/status-v3.3-plan.md`](docs/status-v3.3-plan.md): V3.3 adoption quality
+  scope and gates.
 - [`docs/mini-raft-checker-backed.md`](docs/mini-raft-checker-backed.md):
   Mini-Raft checker-backed and invariant-backed oracle split.
 - [`docs/search-benchmark-results.md`](docs/search-benchmark-results.md):

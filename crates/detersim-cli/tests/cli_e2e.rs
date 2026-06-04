@@ -4,6 +4,7 @@ use std::process::Command;
 fn cli_generates_and_exercises_message_template() {
     let root = std::env::temp_dir().join(format!("detersim-cli-e2e-{}", std::process::id()));
     let template = root.join("demo-message");
+    let protocol_template = root.join("demo-protocol");
     let artifacts = root.join("artifacts");
     let _ = std::fs::remove_dir_all(&root);
 
@@ -40,9 +41,46 @@ fn cli_generates_and_exercises_message_template() {
         String::from_utf8_lossy(&generated_tests.stderr)
     );
 
+    let protocol_init = Command::new(cli_bin())
+        .args([
+            "init-sut",
+            "--name",
+            "demo-protocol",
+            "--template",
+            "protocol",
+            &protocol_template.display().to_string(),
+        ])
+        .output()
+        .expect("run protocol init-sut");
+    assert!(
+        protocol_init.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&protocol_init.stderr)
+    );
+    let protocol_tests = Command::new("cargo")
+        .arg("test")
+        .current_dir(&protocol_template)
+        .output()
+        .expect("run generated protocol cargo test");
+    assert!(
+        protocol_tests.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&protocol_tests.stdout),
+        String::from_utf8_lossy(&protocol_tests.stderr)
+    );
+
     for args in [
         vec!["doctor"],
+        vec!["doctor", "--deep"],
         vec!["search", "--suite", "smoke", "--budget", "8"],
+        vec![
+            "search",
+            "--suite",
+            "sparse-discovery",
+            "--compare",
+            "--budget",
+            "32",
+        ],
         vec!["explain"],
     ] {
         let output = Command::new(cli_bin())

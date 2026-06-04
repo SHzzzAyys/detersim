@@ -1,9 +1,9 @@
 use detersim_shrink::ShrinkConfig;
 use detersim_sim::RunReport;
 use detersim_testkit::{
-    experiment_suite_manifest_to_json, ArtifactPolicy, ExperimentBudget, ExperimentCase,
-    ExperimentCaseManifest, ExperimentSuite, ExperimentSuiteManifest, FailureSignature, OracleKind,
-    RecallPolicy,
+    experiment_suite_manifest_to_json, ArtifactPolicy, ControlKind, EvidenceClass,
+    ExperimentBudget, ExperimentCase, ExperimentCaseManifest, ExperimentSuite,
+    ExperimentSuiteManifest, FailureSignature, OracleKind, RecallPolicy,
 };
 
 fn empty_run(seed: u64) -> RunReport {
@@ -48,6 +48,11 @@ fn suite_manifest_serializes_policy_oracle_and_artifact_metadata() {
                 expected_signature: None,
                 seed_count: 10,
                 artifact_policy: ArtifactPolicy::Never,
+                case_family: "manifest",
+                bug_variant: "correct",
+                control_kind: ControlKind::NegativeControl,
+                expected_recall_rate: Some(0.0),
+                evidence_class: EvidenceClass::Reporting,
             },
             ExperimentCaseManifest {
                 name: "plant-bug",
@@ -58,6 +63,11 @@ fn suite_manifest_serializes_policy_oracle_and_artifact_metadata() {
                 )),
                 seed_count: 10,
                 artifact_policy: ArtifactPolicy::OnFailure,
+                case_family: "manifest",
+                bug_variant: "plant-bug",
+                control_kind: ControlKind::PlantBug,
+                expected_recall_rate: Some(1.0),
+                evidence_class: EvidenceClass::Shrink,
             },
         ],
     };
@@ -69,6 +79,9 @@ fn suite_manifest_serializes_policy_oracle_and_artifact_metadata() {
     assert!(json.contains("\"oracle\":\"linearizability\""));
     assert!(json.contains("\"artifact_policy\":\"on_failure\""));
     assert!(json.contains("\"type\":\"InvariantViolated\""));
+    assert!(json.contains("\"case_family\":\"manifest\""));
+    assert!(json.contains("\"control_kind\":\"plant_bug\""));
+    assert!(json.contains("\"evidence_class\":\"shrink\""));
 }
 
 #[test]

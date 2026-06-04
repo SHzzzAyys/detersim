@@ -81,6 +81,23 @@ fn cli_artifact_path_workflow_chains_suite_search_shrink_and_render() {
     assert!(html_contents.contains("<!doctype html>"));
     assert!(html_contents.contains("failure signature"));
 
+    let explanation_json = root.join("explain.json");
+    let explain = Command::new(cli_bin())
+        .args([
+            "explain",
+            "--artifact",
+            &shrink_json.display().to_string(),
+            "--out",
+            &explanation_json.display().to_string(),
+        ])
+        .output()
+        .expect("explain artifact");
+    assert!(explain.status.success());
+    let explanation_contents =
+        std::fs::read_to_string(&explanation_json).expect("read explanation");
+    assert!(explanation_contents.contains("\"has_causal_graph\":true"));
+    assert!(explanation_contents.contains("\"has_shrink\":true"));
+
     let examples = root.join("examples");
     let render_examples = Command::new(cli_bin())
         .args(["render", "--examples", &examples.display().to_string()])
