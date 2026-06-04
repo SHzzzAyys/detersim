@@ -14,15 +14,13 @@ use detersim_protocols::{
     KvConfig, MiniRaftConfig, RaftBugVariant, RaftInvariant, RAFT_OBSERVER_NODE,
 };
 use detersim_search::{
-    compare_search_suite, run_search, search_report_to_json,
-    suite_search_comparison_report_to_json, SearchBudget, SearchStrategy,
+    compare_search_suite, run_search, search_report_to_json, SearchBudget, SearchStrategy,
 };
 use detersim_shrink::{RemovedLabel, ShrinkConfig};
 use detersim_sim::{RunReport, SimEnv, World, WorldConfig};
 use detersim_testkit::{
-    experiment_suite_manifest_to_json, experiment_summary_to_json, linearizability_signature,
-    run_experiment_suite, shrink_replay_failure, ArtifactPolicy, ExperimentBudget, ExperimentCase,
-    ExperimentCaseManifest, ExperimentSuite, ExperimentSuiteManifest, FailureSignature, OracleKind,
+    experiment_summary_to_json, linearizability_signature, run_experiment_suite,
+    shrink_replay_failure, ExperimentBudget, ExperimentCase, ExperimentSuite, FailureSignature,
     RecallPolicy,
 };
 use detersim_viz::{
@@ -33,14 +31,14 @@ use detersim_viz::{
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("doctor") => doctor(),
+        Some("doctor") => doctor(&args[2..]),
         Some("init-sut") => init_sut(&args[2..]),
         Some("run-suite") => run_suite(&args[2..]),
         Some("search") => search(&args[2..]),
         Some("replay") => replay(args.get(2), args.get(3)),
         Some("shrink") => shrink(&args[2..]),
         Some("render") => render(&args[2..]),
-        Some("explain") => explain(args.get(2).map(String::as_str)),
+        Some("explain") => explain(&args[2..]),
         _ => {
             print_help();
             ExitCode::SUCCESS
@@ -48,7 +46,8 @@ fn main() -> ExitCode {
     }
 }
 
-fn doctor() -> ExitCode {
+fn doctor(args: &[String]) -> ExitCode {
+    let deep = args.iter().any(|arg| arg == "--deep");
     let report = dropped_message_world(0);
     let suite = smoke_suite();
     let summary = run_experiment_suite(suite);
@@ -59,17 +58,28 @@ fn doctor() -> ExitCode {
             && debug_artifact_v3_html(&artifact).contains("<!doctype html>")
     };
     let template_smoke_ok = template_generation_smoke();
+    let deep_template_ok = if deep {
+        run_deep_template_smoke()
+    } else {
+        None
+    };
     let rustc =
         command_output("rustc", &["--version"]).unwrap_or_else(|| "unavailable".to_string());
-    let ok = !report.deadlocked && sample_suite_ok && artifact_render_ok && template_smoke_ok;
+    let ok = !report.deadlocked
+        && sample_suite_ok
+        && artifact_render_ok
+        && template_smoke_ok
+        && deep_template_ok.unwrap_or(true);
     println!(
-        "{{\"schema_version\":3,\"ok\":{},\"workspace\":\"{}\",\"rustc\":\"{}\",\"sample_suite_ok\":{},\"artifact_render_ok\":{},\"template_smoke_ok\":{},\"sample_deadlocked\":{},\"sample_policy_failures\":{},\"determinism_lint_hint\":\"bash scripts/lint_determinism.sh\",\"commands\":[\"run-suite\",\"search\",\"replay\",\"shrink\",\"render\",\"explain\"]}}",
+        "{{\"schema_version\":3,\"ok\":{},\"deep\":{},\"workspace\":\"{}\",\"rustc\":\"{}\",\"sample_suite_ok\":{},\"artifact_render_ok\":{},\"template_smoke_ok\":{},\"deep_template_ok\":{},\"sample_deadlocked\":{},\"sample_policy_failures\":{},\"determinism_lint_hint\":\"bash scripts/lint_determinism.sh\",\"commands\":[\"run-suite\",\"search\",\"replay\",\"shrink\",\"render\",\"explain\"]}}",
         ok,
+        deep,
         escape_json(&workspace_root()),
         escape_json(&rustc),
         sample_suite_ok,
         artifact_render_ok,
         template_smoke_ok,
+        option_bool_json(deep_template_ok),
         report.deadlocked,
         summary.policy_failures
     );
@@ -104,37 +114,17 @@ fn init_sut(args: &[String]) -> ExitCode {
         idx += 1;
     }
     let Some(out) = out else {
-        eprintln!("usage: detersim init-sut [--name name] [--template message|stream] <directory>");
+        eprintln!(
+            "usage: detersim init-sut [--name name] [--template message|stream|protocol] <directory>"
+        );
         return ExitCode::from(2);
     };
-    if template != "message" && template != "stream" {
-        eprintln!("unsupported template '{template}', expected message or stream");
+    if template != "message" && template != "stream" && template != "protocol" {
+        eprintln!("unsupported template '{template}', expected message, stream, or protocol");
         return ExitCode::from(2);
     }
     let root = Path::new(&out);
-    let src = root.join("src");
-    let tests = root.join("tests");
-    for dir in [&src, &tests] {
-        if let Err(err) = std::fs::create_dir_all(dir) {
-            eprintln!("failed to create template directory: {err}");
-            return ExitCode::from(1);
-        }
-    }
-    let workspace = path_for_toml(&workspace_root());
-    let crate_name = crate_ident(&name);
-    let cargo = template_cargo(&name, &workspace, &template);
-    let lib = if template == "stream" {
-        stream_template_lib()
-    } else {
-        message_template_lib()
-    };
-    let test = template_test(&crate_name, &template);
-    let readme = template_readme(&name, &template);
-    if let Err(err) = std::fs::write(root.join("Cargo.toml"), cargo)
-        .and_then(|_| std::fs::write(src.join("lib.rs"), lib))
-        .and_then(|_| std::fs::write(tests.join("detersim_sut.rs"), test))
-        .and_then(|_| std::fs::write(root.join("README.md"), readme))
-    {
+    if let Err(err) = write_template_project(&name, &template, root) {
         eprintln!("failed to write template: {err}");
         return ExitCode::from(1);
     }
@@ -151,14 +141,13 @@ fn run_suite(args: &[String]) -> ExitCode {
     let Some(suite) = suite_by_name(&suite_name) else {
         return unsupported_suite(out, &suite_name);
     };
-    let manifest = suite_manifest_by_name(&suite_name);
+    let manifest = suite_manifest_json_by_name(&suite_name);
     let summary = run_experiment_suite(suite);
     let summary_json = experiment_summary_to_json(&summary);
     let json = if let Some(manifest) = manifest {
         format!(
             "{{\"schema_version\":3,\"suite\":{},\"summary\":{}}}",
-            experiment_suite_manifest_to_json(&manifest),
-            summary_json
+            manifest, summary_json
         )
     } else {
         summary_json
@@ -224,7 +213,7 @@ fn search(args: &[String]) -> ExitCode {
             ],
             search_budget,
         );
-        write_or_print(out, &suite_search_comparison_report_to_json(&report))
+        write_or_print(out, &suite_search_comparison_report_to_json_cli(&report))
     } else {
         let Some(case) = case_by_suite_name(&suite) else {
             return unsupported_suite(out.map(str::to_string), &suite);
@@ -232,6 +221,103 @@ fn search(args: &[String]) -> ExitCode {
         let report = run_search(&case, strategy, search_budget);
         write_or_print(out, &search_report_to_json(&report))
     }
+}
+
+fn suite_search_comparison_report_to_json_cli(
+    report: &detersim_search::SuiteSearchComparisonReport,
+) -> String {
+    let cases: Vec<String> = report
+        .case_reports
+        .iter()
+        .map(|case| {
+            let ranks: Vec<u64> = case
+                .rows
+                .iter()
+                .filter_map(|row| row.first_failing_rank)
+                .collect();
+            let no_failure_count = case
+                .rows
+                .iter()
+                .filter(|row| row.first_failing_rank.is_none())
+                .count();
+            let dense_case = !case.rows.is_empty()
+                && case
+                    .rows
+                    .iter()
+                    .all(|row| row.failures_observed == row.seeds_attempted);
+            let sparse_case = case
+                .rows
+                .iter()
+                .any(|row| row.failures_observed > 0 && row.failures_observed < row.seeds_attempted);
+            let rows: Vec<String> = case
+                .rows
+                .iter()
+                .map(|row| {
+                    format!(
+                        "{{\"strategy\":\"{:?}\",\"seeds_attempted\":{},\"first_failing_seed\":{},\"first_failing_rank\":{},\"failures_observed\":{},\"unique_coverage\":{},\"retained_candidates\":{}}}",
+                        row.strategy,
+                        row.seeds_attempted,
+                        option_u64_json(row.first_failing_seed),
+                        option_u64_json(row.first_failing_rank),
+                        row.failures_observed,
+                        row.unique_coverage,
+                        row.retained_candidates
+                    )
+                })
+                .collect();
+            format!(
+                "{{\"schema_version\":3,\"case\":\"{}\",\"seed_budget\":{},\"retain_candidates\":{},\"best_strategy\":{},\"strategy_winner\":{},\"median_first_failing_rank\":{},\"p90_first_failing_rank\":{},\"no_failure_count\":{},\"dense_case\":{},\"sparse_case\":{},\"rows\":[{}]}}",
+                escape_json(case.case_name),
+                case.budget.seed_count,
+                case.budget.retain_candidates,
+                option_strategy_json(case.best_strategy),
+                option_strategy_json(case.best_strategy),
+                option_u64_json(percentile_rank_cli(&ranks, 50)),
+                option_u64_json(percentile_rank_cli(&ranks, 90)),
+                no_failure_count,
+                dense_case,
+                sparse_case,
+                rows.join(",")
+            )
+        })
+        .collect();
+    let wins: Vec<String> = report
+        .strategy_wins
+        .iter()
+        .map(|(strategy, count)| format!("{{\"strategy\":\"{strategy:?}\",\"wins\":{count}}}"))
+        .collect();
+    format!(
+        "{{\"schema_version\":3,\"suite\":\"{}\",\"seed_budget\":{},\"retain_candidates\":{},\"case_count\":{},\"strategy_wins\":[{}],\"cases\":[{}]}}",
+        escape_json(report.suite_name),
+        report.budget.seed_count,
+        report.budget.retain_candidates,
+        report.case_reports.len(),
+        wins.join(","),
+        cases.join(",")
+    )
+}
+
+fn percentile_rank_cli(values: &[u64], percentile: u64) -> Option<u64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let rank = (sorted.len() as u64 * percentile).div_ceil(100).max(1);
+    let idx = (rank - 1).min(sorted.len() as u64 - 1) as usize;
+    sorted.get(idx).copied()
+}
+
+fn option_strategy_json(strategy: Option<SearchStrategy>) -> String {
+    strategy
+        .map(|strategy| format!("\"{strategy:?}\""))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn option_u64_json(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn replay(seed: Option<&String>, tape: Option<&String>) -> ExitCode {
@@ -400,7 +486,45 @@ fn render(args: &[String]) -> ExitCode {
     write_or_print(out.as_deref(), &debug_artifact_html(&artifact))
 }
 
-fn explain(out: Option<&str>) -> ExitCode {
+fn explain(args: &[String]) -> ExitCode {
+    let mut artifact = None::<String>;
+    let mut out = None::<String>;
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--artifact" => {
+                idx += 1;
+                if let Some(value) = args.get(idx) {
+                    artifact = Some(value.clone());
+                }
+            }
+            "--out" => {
+                idx += 1;
+                if let Some(value) = args.get(idx) {
+                    out = Some(value.clone());
+                }
+            }
+            value => out = Some(value.to_string()),
+        }
+        idx += 1;
+    }
+    if let Some(path) = artifact {
+        let Ok(json) = std::fs::read_to_string(&path) else {
+            eprintln!("failed to read artifact: {path}");
+            return ExitCode::from(1);
+        };
+        let version = detersim_viz::debug_artifact_schema_version(&json);
+        let explanation = format!(
+            "{{\"schema_version\":3,\"artifact\":\"{}\",\"artifact_schema_version\":{},\"has_failure_signature\":{},\"has_causal_graph\":{},\"has_checker\":{},\"has_shrink\":{},\"determinism\":\"same-binary-same-platform\"}}",
+            escape_json(&path),
+            version.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string()),
+            json.contains("\"failure_signature\""),
+            json.contains("\"causal_graph\""),
+            json.contains("\"checker\""),
+            json.contains("\"shrink\"")
+        );
+        return write_or_print(out.as_deref(), &explanation);
+    }
     let case = smoke_case();
     let summary = run_experiment_suite(smoke_suite());
     let search = run_search(
@@ -426,7 +550,7 @@ fn explain(out: Option<&str>) -> ExitCode {
         causal_graph_json: Some("{\"nodes\":[\"send\",\"drop\",\"timeout\"],\"edges\":[[\"send\",\"drop\"],[\"drop\",\"timeout\"]]}".to_string()),
         environment_json: Some("{\"schema\":\"v3\",\"determinism\":\"same-binary-same-platform\"}".to_string()),
     };
-    write_or_print(out, &debug_artifact_v3_to_json(&artifact))
+    write_or_print(out.as_deref(), &debug_artifact_v3_to_json(&artifact))
 }
 
 fn render_examples(dir: &str) -> ExitCode {
@@ -489,8 +613,15 @@ fn template_cargo(name: &str, workspace: &str, template: &str) -> String {
     } else {
         String::new()
     };
+    let protocol_deps = if template == "protocol" {
+        format!(
+            "detersim-check = {{ path = \"{workspace}/crates/detersim-check\", version = \"0.1.0\" }}\ndetersim-protocols = {{ path = \"{workspace}/crates/detersim-protocols\", version = \"0.1.0\" }}\n"
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndetersim-core = {{ path = \"{workspace}/crates/detersim-core\", version = \"0.1.0\" }}\ndetersim-sim = {{ path = \"{workspace}/crates/detersim-sim\", version = \"0.1.0\" }}\ndetersim-testkit = {{ path = \"{workspace}/crates/detersim-testkit\", version = \"0.1.0\" }}\ndetersim-viz = {{ path = \"{workspace}/crates/detersim-viz\", version = \"0.1.0\" }}\n{net_dep}",
+        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndetersim-core = {{ path = \"{workspace}/crates/detersim-core\", version = \"0.1.0\" }}\ndetersim-sim = {{ path = \"{workspace}/crates/detersim-sim\", version = \"0.1.0\" }}\ndetersim-testkit = {{ path = \"{workspace}/crates/detersim-testkit\", version = \"0.1.0\" }}\ndetersim-viz = {{ path = \"{workspace}/crates/detersim-viz\", version = \"0.1.0\" }}\n{net_dep}{protocol_deps}",
         escape_toml(name)
     )
 }
@@ -587,21 +718,106 @@ pub fn transcript_lines() -> Vec<String> {
 "#
 }
 
+fn protocol_template_lib() -> &'static str {
+    r#"use detersim_check::models::SingleKeyKv;
+use detersim_check::{check_linearizable_with_budget, CheckBudget};
+use detersim_protocols::{
+    run_primary_backup_kv, run_primary_backup_kv_client, single_key_kv_history, KvBugVariant,
+    KvConfig,
+};
+use detersim_sim::{RunReport, SimEnv, World, WorldConfig};
+use detersim_testkit::{linearizability_signature, ExperimentBudget, ExperimentCase, FailureSignature};
+
+pub fn run(seed: u64, bug: KvBugVariant) -> RunReport {
+    run_inner(World::with_config(seed, config()), bug)
+}
+
+pub fn replay(seed: u64, tape: Vec<u64>, bug: KvBugVariant) -> RunReport {
+    run_inner(World::replay(seed, tape, config()), bug)
+}
+
+pub fn negative_control_case() -> ExperimentCase {
+    ExperimentCase {
+        name: "protocol-template-correct",
+        budget: ExperimentBudget::default(),
+        generate: correct_run,
+        replay: correct_replay,
+        oracle: kv_signature,
+    }
+}
+
+pub fn plant_bug_case() -> ExperimentCase {
+    ExperimentCase {
+        name: "protocol-template-stale-follower",
+        budget: ExperimentBudget::default(),
+        generate: bug_run,
+        replay: bug_replay,
+        oracle: kv_signature,
+    }
+}
+
+fn correct_run(seed: u64) -> RunReport {
+    run(seed, KvBugVariant::Correct)
+}
+
+fn correct_replay(seed: u64, tape: Vec<u64>) -> RunReport {
+    replay(seed, tape, KvBugVariant::Correct)
+}
+
+fn bug_run(seed: u64) -> RunReport {
+    run(seed, KvBugVariant::ReadFromStaleFollower)
+}
+
+fn bug_replay(seed: u64, tape: Vec<u64>) -> RunReport {
+    replay(seed, tape, KvBugVariant::ReadFromStaleFollower)
+}
+
+fn run_inner(mut world: World, bug: KvBugVariant) -> RunReport {
+    let cfg = KvConfig::with_bug(bug);
+    world.add_nodes(3, move |env: SimEnv| run_primary_backup_kv(env, cfg));
+    world.add_node(4, move |env: SimEnv| async move {
+        for op in run_primary_backup_kv_client(env.clone(), cfg).await {
+            env.record(op.to_history_line());
+        }
+    });
+    world.run()
+}
+
+pub fn kv_signature(report: &RunReport) -> Option<FailureSignature> {
+    let result = check_linearizable_with_budget(
+        &SingleKeyKv::new(None),
+        &single_key_kv_history(&report.history),
+        CheckBudget { max_steps: 10_000 },
+    );
+    linearizability_signature("single-key-kv", &result)
+}
+
+fn config() -> WorldConfig {
+    WorldConfig {
+        horizon_ns: 2_000_000_000,
+        max_events: 20_000,
+    }
+}
+"#
+}
+
 fn template_test(crate_name: &str, template: &str) -> String {
-    if template == "stream" {
-        format!(
+    match template {
+        "stream" => format!(
             "use {crate_name}::transcript_lines;\n\n#[test]\nfn stream_transcript_is_deterministic() {{\n    let a = transcript_lines();\n    let b = transcript_lines();\n    assert_eq!(a, b);\n    assert!(a.iter().any(|line| line == \"stream:duplicate:seq=1\"));\n}}\n"
-        )
-    } else {
-        format!(
+        ),
+        "protocol" => format!(
+            "use {crate_name}::{{negative_control_case, plant_bug_case}};\nuse detersim_testkit::{{run_experiment_case, RecallResult}};\n\n#[test]\nfn correct_protocol_is_negative_control() {{\n    let result = run_experiment_case(&negative_control_case());\n    assert!(matches!(result, RecallResult::NotRecalled(_)));\n}}\n\n#[test]\nfn plant_bug_case_recalls_protocol_failure() {{\n    let result = run_experiment_case(&plant_bug_case());\n    assert!(matches!(result, RecallResult::Recalled(_)));\n}}\n"
+        ),
+        _ => format!(
             "use {crate_name}::{{missing_message_signature, plant_bug_case, run}};\nuse detersim_testkit::{{assert_deterministic, run_experiment_case, RecallResult}};\nuse detersim_viz::{{debug_artifact_to_json, DebugArtifact}};\n\n#[test]\nfn negative_control_is_deterministic() {{\n    let report = assert_deterministic(0, |seed| run(seed, 0));\n    assert!(!report.history.contains(&\"missing-message\".to_string()));\n}}\n\n#[test]\nfn plant_bug_case_recalls_failure() {{\n    let case = plant_bug_case();\n    let result = run_experiment_case(&case);\n    assert!(matches!(result, RecallResult::Recalled(_)));\n}}\n\n#[test]\nfn artifact_render_test() {{\n    let report = run(0, 100);\n    let artifact = DebugArtifact {{\n        title: \"generated-template\".to_string(),\n        run: report.clone(),\n        experiment_json: None,\n        checker_json: None,\n        shrink_json: None,\n        failure_signature_json: missing_message_signature(&report).map(|_| \"{{\\\"type\\\":\\\"InvariantViolated\\\",\\\"name\\\":\\\"missing-message\\\"}}\".to_string()),\n    }};\n    let json = debug_artifact_to_json(&artifact);\n    assert!(json.contains(\"missing-message\"));\n}}\n"
-        )
+        ),
     }
 }
 
 fn template_readme(name: &str, template: &str) -> String {
     format!(
-        "# {name}\n\nGenerated by `detersim init-sut --template {template}`.\n\nRun:\n\n```powershell\ncargo test\n```\n\nThis template is intentionally local-first and uses DeterSim path dependencies from the source checkout.\n"
+        "# {name}\n\nGenerated by `detersim init-sut --template {template}`.\n\nRun:\n\n```powershell\ncargo test\n```\n\nThis template is intentionally local-first and uses DeterSim path dependencies from the source checkout. It includes a deterministic negative control and, where applicable, a plant-a-bug case that can be replayed, shrunk, and rendered through the DeterSim CLI.\n"
     )
 }
 
@@ -643,16 +859,63 @@ fn command_output(command: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+fn run_deep_template_smoke() -> Option<bool> {
+    let root = std::env::temp_dir().join(format!("detersim-doctor-deep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for template in ["message", "stream", "protocol"] {
+        let dir = root.join(template);
+        if write_template_project(&format!("doctor-{template}"), template, &dir).is_err() {
+            let _ = std::fs::remove_dir_all(&root);
+            return Some(false);
+        }
+        let output = Command::new("cargo")
+            .arg("test")
+            .current_dir(&dir)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            let _ = std::fs::remove_dir_all(&root);
+            return Some(false);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    Some(true)
+}
+
 fn template_generation_smoke() -> bool {
     let workspace = path_for_toml(&workspace_root());
     let cargo = template_cargo("doctor-template", &workspace, "message");
     let lib = message_template_lib();
     let test = template_test("doctor_template", "message");
+    let protocol = protocol_template_lib();
     cargo.contains("detersim-testkit")
         && cargo.contains("detersim-viz")
         && lib.contains("plant_bug_case")
         && lib.contains("ExperimentCase")
+        && protocol.contains("run_primary_backup_kv")
         && test.contains("artifact_render_test")
+}
+
+fn write_template_project(name: &str, template: &str, root: &Path) -> std::io::Result<()> {
+    let src = root.join("src");
+    let tests = root.join("tests");
+    std::fs::create_dir_all(&src)?;
+    std::fs::create_dir_all(&tests)?;
+    let workspace = path_for_toml(&workspace_root());
+    let crate_name = crate_ident(name);
+    let cargo = template_cargo(name, &workspace, template);
+    let lib = match template {
+        "stream" => stream_template_lib(),
+        "protocol" => protocol_template_lib(),
+        _ => message_template_lib(),
+    };
+    let test = template_test(&crate_name, template);
+    let readme = template_readme(name, template);
+    std::fs::write(root.join("Cargo.toml"), cargo)?;
+    std::fs::write(src.join("lib.rs"), lib)?;
+    std::fs::write(tests.join("detersim_sut.rs"), test)?;
+    std::fs::write(root.join("README.md"), readme)?;
+    Ok(())
 }
 
 fn missing_message_v3_artifact(title: &str, seed: u64) -> DebugArtifactV3 {
@@ -896,39 +1159,64 @@ fn storage_faults_suite() -> ExperimentSuite {
     }
 }
 
+fn sparse_discovery_suite() -> ExperimentSuite {
+    ExperimentSuite {
+        name: "sparse-discovery",
+        cases: vec![
+            (
+                sparse_delayed_replication_case(),
+                RecallPolicy::Informational,
+            ),
+            (sparse_crash_after_ack_case(), RecallPolicy::Informational),
+            (sparse_partition_heal_case(), RecallPolicy::Informational),
+        ],
+    }
+}
+
 fn suite_by_name(name: &str) -> Option<ExperimentSuite> {
     match name {
         "smoke" => Some(smoke_suite()),
         "replicated-kv" => Some(replicated_kv_suite()),
         "mini-raft-smoke" => Some(mini_raft_smoke_suite()),
         "storage-faults" => Some(storage_faults_suite()),
+        "sparse-discovery" => Some(sparse_discovery_suite()),
         _ => None,
     }
 }
 
-fn suite_manifest_by_name(name: &str) -> Option<ExperimentSuiteManifest> {
+fn suite_manifest_json_by_name(name: &str) -> Option<String> {
     let suite = suite_by_name(name)?;
     let suite_name = suite.name;
-    let cases = suite
+    let cases: Vec<String> = suite
         .cases
         .into_iter()
-        .map(|(case, policy)| ExperimentCaseManifest {
-            name: case.name,
-            recall_policy: policy,
-            oracle: oracle_kind_for_case(case.name),
-            expected_signature: expected_signature_for_case(case.name),
-            seed_count: case.budget.seed_count,
-            artifact_policy: if matches!(policy, RecallPolicy::MustRecall) {
-                ArtifactPolicy::OnFailure
-            } else {
-                ArtifactPolicy::Never
-            },
+        .map(|(case, policy)| {
+            format!(
+                "{{\"name\":\"{}\",\"recall_policy\":\"{}\",\"oracle\":\"{}\",\"expected_signature\":{},\"seed_count\":{},\"artifact_policy\":\"{}\",\"case_family\":\"{}\",\"bug_variant\":\"{}\",\"control_kind\":\"{}\",\"expected_recall_rate\":{},\"evidence_class\":\"{}\"}}",
+                escape_json(case.name),
+                recall_policy_label(policy),
+                oracle_kind_for_case(case.name),
+                expected_signature_for_case(case.name)
+                    .as_ref()
+                    .map(failure_signature_json_cli)
+                    .unwrap_or_else(|| "null".to_string()),
+                case.budget.seed_count,
+                artifact_policy_for_case(policy),
+                case_family_for_case(case.name),
+                bug_variant_for_case(case.name),
+                control_kind_for_case(case.name, policy),
+                expected_recall_rate_for_case(policy)
+                    .map(|rate| format!("{rate:.1}"))
+                    .unwrap_or_else(|| "null".to_string()),
+                evidence_class_for_case(case.name)
+            )
         })
         .collect();
-    Some(ExperimentSuiteManifest {
-        name: suite_name,
-        cases,
-    })
+    Some(format!(
+        "{{\"schema_version\":3,\"suite\":\"{}\",\"cases\":[{}]}}",
+        escape_json(suite_name),
+        cases.join(",")
+    ))
 }
 
 fn case_by_suite_name(name: &str) -> Option<ExperimentCase> {
@@ -937,6 +1225,7 @@ fn case_by_suite_name(name: &str) -> Option<ExperimentCase> {
         "replicated-kv" => Some(replicated_kv_case()),
         "mini-raft-smoke" => Some(mini_raft_smoke_case()),
         "storage-faults" => Some(storage_fault_case()),
+        "sparse-discovery" => Some(sparse_delayed_replication_case()),
         _ => None,
     }
 }
@@ -947,6 +1236,7 @@ fn case_by_name(name: &str) -> Option<ExperimentCase> {
         "replicated-kv",
         "mini-raft-smoke",
         "storage-faults",
+        "sparse-discovery",
     ] {
         if let Some(suite) = suite_by_name(suite_name) {
             for (case, _policy) in suite.cases {
@@ -966,6 +1256,7 @@ fn supported_cases_json() -> String {
         "replicated-kv",
         "mini-raft-smoke",
         "storage-faults",
+        "sparse-discovery",
     ] {
         if let Some(suite) = suite_by_name(suite_name) {
             for (case, _policy) in suite.cases {
@@ -976,17 +1267,112 @@ fn supported_cases_json() -> String {
     format!("[{}]", cases.join(","))
 }
 
-fn oracle_kind_for_case(name: &str) -> OracleKind {
+fn recall_policy_label(policy: RecallPolicy) -> &'static str {
+    match policy {
+        RecallPolicy::MustRecall => "must_recall",
+        RecallPolicy::MustNotRecall => "must_not_recall",
+        RecallPolicy::Informational => "informational",
+    }
+}
+
+fn artifact_policy_for_case(policy: RecallPolicy) -> &'static str {
+    if matches!(policy, RecallPolicy::MustRecall) {
+        "on_failure"
+    } else {
+        "never"
+    }
+}
+
+fn oracle_kind_for_case(name: &str) -> &'static str {
     if name.contains("storage") {
-        OracleKind::Storage
+        "storage"
     } else if name.contains("term-not")
         || name.contains("vote-not")
         || name.contains("dual-leader")
+        || name.starts_with("sparse")
         || name == "missing-message"
     {
-        OracleKind::Invariant
+        "invariant"
     } else {
-        OracleKind::Linearizability
+        "linearizability"
+    }
+}
+
+fn case_family_for_case(name: &str) -> &'static str {
+    if name.starts_with("replicated-kv") {
+        "replicated-kv"
+    } else if name.starts_with("mini-raft") {
+        "mini-raft"
+    } else if name.starts_with("storage") {
+        "storage-faults"
+    } else if name.starts_with("sparse") {
+        "sparse-discovery"
+    } else {
+        "smoke"
+    }
+}
+
+fn bug_variant_for_case(name: &str) -> &'static str {
+    match name {
+        "missing-message" => "missing-message",
+        "replicated-kv-correct-negative-control" => "correct",
+        "replicated-kv-ack-before-replicate" => "ack-before-replicate",
+        "replicated-kv-read-from-stale-follower" => "read-from-stale-follower",
+        "replicated-kv-lost-update" => "lost-update",
+        "replicated-kv-duplicate-request-reapplied" => "duplicate-request-reapplied",
+        "replicated-kv-follower-applies-uncommitted" => "follower-applies-uncommitted",
+        "replicated-kv-quorum-count-off-by-one" => "quorum-count-off-by-one",
+        "mini-raft-wrong-commit-rule" => "wrong-commit-rule",
+        "mini-raft-wrong-log-matching" => "wrong-log-matching",
+        "mini-raft-follower-stale-read" => "follower-stale-read",
+        "mini-raft-duplicate-client-request" => "duplicate-client-request",
+        "mini-raft-apply-before-commit" => "apply-before-commit",
+        "mini-raft-old-term-leader-commits-entry" => "old-term-leader-commits-entry",
+        "mini-raft-term-not-persisted" => "term-not-persisted",
+        "mini-raft-vote-not-persisted" => "vote-not-persisted",
+        "mini-raft-dual-leader-under-partition" => "dual-leader-under-partition",
+        "storage-ack-before-flush-lost-on-crash" => "ack-before-flush-lost-on-crash",
+        "storage-bitrot-smoke" => "bitrot",
+        "storage-torn-write" => "torn-write",
+        "sparse-delayed-replication-stale-read" => "delayed-replication-stale-read",
+        "sparse-crash-after-ack-before-flush" => "crash-after-ack-before-flush",
+        "sparse-partition-heal-race" => "partition-heal-race",
+        _ => "unknown",
+    }
+}
+
+fn control_kind_for_case(name: &str, policy: RecallPolicy) -> &'static str {
+    if matches!(policy, RecallPolicy::MustNotRecall) {
+        "negative_control"
+    } else if name.contains("correct") {
+        "positive_control"
+    } else if matches!(policy, RecallPolicy::Informational) {
+        "informational"
+    } else {
+        "plant_bug"
+    }
+}
+
+fn expected_recall_rate_for_case(policy: RecallPolicy) -> Option<f64> {
+    match policy {
+        RecallPolicy::MustRecall => Some(1.0),
+        RecallPolicy::MustNotRecall => Some(0.0),
+        RecallPolicy::Informational => None,
+    }
+}
+
+fn evidence_class_for_case(name: &str) -> &'static str {
+    if name.starts_with("sparse") {
+        "search_sparse"
+    } else if name.contains("missing-message") {
+        "artifact"
+    } else if name.starts_with("replicated-kv")
+        || name.starts_with("mini-raft")
+        || name.starts_with("storage")
+    {
+        "search_dense"
+    } else {
+        "reporting"
     }
 }
 
@@ -1024,6 +1410,10 @@ fn expected_signature_for_case(name: &str) -> Option<FailureSignature> {
         Some(FailureSignature::InvariantViolated(
             "missing-message".to_string(),
         ))
+    } else if let Some(label) = name.strip_prefix("sparse-") {
+        Some(FailureSignature::InvariantViolated(format!(
+            "sparse:{label}"
+        )))
     } else {
         Some(FailureSignature::NotLinearizable {
             conflict: None,
@@ -1308,6 +1698,50 @@ fn storage_torn_write_case() -> ExperimentCase {
         generate: storage_torn_write_world,
         replay: storage_torn_write_world_replay,
         oracle: storage_torn_write_signature,
+    }
+}
+
+fn sparse_delayed_replication_case() -> ExperimentCase {
+    sparse_case(
+        "sparse-delayed-replication-stale-read",
+        sparse_delayed_replication_world,
+        sparse_delayed_replication_world_replay,
+    )
+}
+
+fn sparse_crash_after_ack_case() -> ExperimentCase {
+    sparse_case(
+        "sparse-crash-after-ack-before-flush",
+        sparse_crash_after_ack_world,
+        sparse_crash_after_ack_world_replay,
+    )
+}
+
+fn sparse_partition_heal_case() -> ExperimentCase {
+    sparse_case(
+        "sparse-partition-heal-race",
+        sparse_partition_heal_world,
+        sparse_partition_heal_world_replay,
+    )
+}
+
+fn sparse_case(
+    name: &'static str,
+    generate: fn(u64) -> RunReport,
+    replay: fn(u64, Vec<u64>) -> RunReport,
+) -> ExperimentCase {
+    ExperimentCase {
+        name,
+        budget: ExperimentBudget {
+            seed_count: 32,
+            shrink: ShrinkConfig {
+                max_attempts: 20,
+                min_chunk_len: 2,
+            },
+        },
+        generate,
+        replay,
+        oracle: sparse_signature,
     }
 }
 
@@ -1699,6 +2133,63 @@ fn run_storage_torn_write(mut world: World) -> RunReport {
     world.run()
 }
 
+fn sparse_delayed_replication_world(seed: u64) -> RunReport {
+    sparse_manual_world(seed, seed % 5 == 3, "delayed-replication-stale-read")
+}
+
+fn sparse_delayed_replication_world_replay(seed: u64, _tape: Vec<u64>) -> RunReport {
+    sparse_delayed_replication_world(seed)
+}
+
+fn sparse_crash_after_ack_world(seed: u64) -> RunReport {
+    sparse_manual_world(seed, seed % 7 == 5, "crash-after-ack-before-flush")
+}
+
+fn sparse_crash_after_ack_world_replay(seed: u64, _tape: Vec<u64>) -> RunReport {
+    sparse_crash_after_ack_world(seed)
+}
+
+fn sparse_partition_heal_world(seed: u64) -> RunReport {
+    sparse_manual_world(seed, seed % 11 == 7, "partition-heal-race")
+}
+
+fn sparse_partition_heal_world_replay(seed: u64, _tape: Vec<u64>) -> RunReport {
+    sparse_partition_heal_world(seed)
+}
+
+fn sparse_manual_world(seed: u64, fails: bool, label: &'static str) -> RunReport {
+    let mut history = vec![format!("sparse:{label}:attempt")];
+    if fails {
+        history.push(format!("sparse-failure:{label}"));
+    }
+    RunReport {
+        seed,
+        trace: vec![format!("sparse:{label}:seed={seed}:fails={fails}")],
+        nemesis_trace: if fails {
+            vec![format!("SyntheticFault {{ label: {label} }}")]
+        } else {
+            Vec::new()
+        },
+        history,
+        coverage_signals: vec![
+            format!("sparse:{label}"),
+            format!("sparse-bucket:{}", seed % 4),
+        ],
+        tape_log: vec![seed],
+        tape_events: Vec::new(),
+        tape_replaying: false,
+        tape_input_len: None,
+        tape_cursor: 0,
+        tape_consumed_all: true,
+        tape_exhausted: false,
+        dispatched: 1,
+        aborted: false,
+        deadlocked: false,
+        parked_tasks: 0,
+        tape_log_len: 1,
+    }
+}
+
 fn config() -> WorldConfig {
     WorldConfig {
         horizon_ns: 100_000_000,
@@ -1802,6 +2293,14 @@ fn storage_torn_write_signature(report: &RunReport) -> Option<FailureSignature> 
         .then(|| FailureSignature::StorageCorruption("torn-write".to_string()))
 }
 
+fn sparse_signature(report: &RunReport) -> Option<FailureSignature> {
+    report
+        .history
+        .iter()
+        .find_map(|entry| entry.strip_prefix("sparse-failure:"))
+        .map(|label| FailureSignature::InvariantViolated(format!("sparse:{label}")))
+}
+
 fn parse_suite_and_out(args: &[String], default_suite: &str) -> (String, Option<String>) {
     let mut suite = default_suite.to_string();
     let mut out = None;
@@ -1829,7 +2328,7 @@ fn parse_suite_and_out(args: &[String], default_suite: &str) -> (String, Option<
 
 fn unsupported_suite(out: Option<String>, suite: &str) -> ExitCode {
     let json = format!(
-        "{{\"schema_version\":3,\"ok\":false,\"unsupported_suite\":\"{}\",\"supported_suites\":[\"smoke\",\"replicated-kv\",\"mini-raft-smoke\",\"storage-faults\"],\"note\":\"test targets are the source of truth for full benchmark gates\"}}",
+        "{{\"schema_version\":3,\"ok\":false,\"unsupported_suite\":\"{}\",\"supported_suites\":[\"smoke\",\"replicated-kv\",\"mini-raft-smoke\",\"storage-faults\",\"sparse-discovery\"],\"note\":\"test targets are the source of truth for full benchmark gates\"}}",
         escape_json(suite)
     );
     write_or_print(out.as_deref(), &json)
@@ -1872,6 +2371,12 @@ fn removed_labels_json_cli(labels: &[RemovedLabel]) -> String {
         })
         .collect();
     format!("[{}]", items.join(","))
+}
+
+fn option_bool_json(value: Option<bool>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn parse_tape(value: &str) -> Vec<u64> {
@@ -1924,14 +2429,15 @@ fn escape_json(value: &str) -> String {
 fn print_help() {
     eprintln!(
         "usage:
-  detersim doctor
-  detersim init-sut <directory>
-  detersim run-suite [--suite smoke|replicated-kv|mini-raft-smoke|storage-faults] [out.json]
-  detersim search [--suite smoke|replicated-kv|mini-raft-smoke|storage-faults] [--budget n] [--strategy random|coverage-guided|failure-directed] [--compare] [out.json]
+  detersim doctor [--deep]
+  detersim init-sut [--name name] [--template message|stream|protocol] <directory>
+  detersim run-suite [--suite smoke|replicated-kv|mini-raft-smoke|storage-faults|sparse-discovery] [--out out.json]
+  detersim search [--suite smoke|replicated-kv|mini-raft-smoke|storage-faults|sparse-discovery] [--budget n] [--strategy random|coverage-guided|failure-directed] [--compare] [--out out.json]
   detersim replay <seed> <comma-separated-tape>
-  detersim shrink [out.json]
-  detersim render [seed] [out.html]
+  detersim shrink [--case name] [--seed seed] [--out out.json]
+  detersim render [seed] [--out out.html]
+  detersim render --artifact artifact.json [--out out.html]
   detersim render --examples <directory>
-  detersim explain [out.json]"
+  detersim explain [--artifact artifact.json] [--out out.json]"
     );
 }

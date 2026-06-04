@@ -107,10 +107,20 @@ fn suite_search_comparison_aggregates_cases_and_winners() {
     assert_eq!(report.suite_name, "search-suite");
     assert_eq!(report.case_reports.len(), 2);
     assert!(!report.strategy_wins.is_empty());
+    assert!(report
+        .case_reports
+        .iter()
+        .all(|case| case.strategy_winner.is_some()));
+    assert!(report
+        .case_reports
+        .iter()
+        .any(|case| case.sparse_case && !case.dense_case));
 
     let json = suite_search_comparison_report_to_json(&report);
     assert!(json.contains("\"schema_version\":3"));
     assert!(json.contains("\"suite\":\"search-suite\""));
     assert!(json.contains("\"case_count\":2"));
     assert!(json.contains("\"strategy_wins\""));
+    assert!(json.contains("\"median_first_failing_rank\""));
+    assert!(json.contains("\"sparse_case\":true"));
 }

@@ -108,6 +108,10 @@ fn experiment_suite_enforces_recall_policies_and_json() {
     let summary = run_experiment_suite(suite);
     assert_eq!(summary.total_cases, 2);
     assert_eq!(summary.policy_failures, 0);
+    assert_eq!(summary.control_failures, 0);
+    assert_eq!(summary.oracle_inconclusive_count, 0);
+    assert_eq!(summary.replay_mismatch_count, 0);
+    assert_eq!(summary.shrink_mismatch_count, 0);
     assert_eq!(summary.required_recalled, 1);
     assert_eq!(summary.required_not_recalled, 1);
     assert_eq!(summary.matrix.recalled_cases, 1);
@@ -116,4 +120,6 @@ fn experiment_suite_enforces_recall_policies_and_json() {
     assert!(json.contains("\"schema_version\":2"));
     assert!(json.contains("\"v2-suite-smoke\""));
     assert!(json.contains("\"artifacts\""));
+    assert!(json.contains("\"control_failures\":0"));
+    assert!(json.contains("\"replay_mismatch_count\":0"));
 }

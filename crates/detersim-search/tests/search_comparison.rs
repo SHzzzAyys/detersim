@@ -43,10 +43,17 @@ fn comparison_reports_random_vs_coverage_guided() {
     assert_eq!(random.first_failing_rank, Some(1));
     assert_eq!(guided.first_failing_rank, Some(0));
     assert_eq!(report.best_strategy, Some(SearchStrategy::CoverageGuided));
+    assert_eq!(report.strategy_winner, Some(SearchStrategy::CoverageGuided));
+    assert_eq!(report.median_first_failing_rank, Some(0));
+    assert_eq!(report.p90_first_failing_rank, Some(1));
+    assert!(report.sparse_case);
+    assert!(!report.dense_case);
 
     let json = search_comparison_report_to_json(&report);
     assert!(json.contains("\"schema_version\":3"));
     assert!(json.contains("\"best_strategy\":\"CoverageGuided\""));
+    assert!(json.contains("\"strategy_winner\":\"CoverageGuided\""));
+    assert!(json.contains("\"sparse_case\":true"));
 }
 
 fn odd_seed_failure(seed: u64) -> RunReport {

@@ -2,7 +2,12 @@ use std::process::Command;
 
 #[test]
 fn cli_runs_real_benchmark_suites_and_search_comparison() {
-    for suite in ["replicated-kv", "mini-raft-smoke", "storage-faults"] {
+    for suite in [
+        "replicated-kv",
+        "mini-raft-smoke",
+        "storage-faults",
+        "sparse-discovery",
+    ] {
         let output = Command::new(cli_bin())
             .args(["run-suite", "--suite", suite])
             .output()
@@ -48,6 +53,22 @@ fn cli_runs_real_benchmark_suites_and_search_comparison() {
     let stdout = String::from_utf8_lossy(&compare.stdout);
     assert!(stdout.contains("\"strategy_wins\""));
     assert!(stdout.contains("\"cases\""));
+
+    let sparse = Command::new(cli_bin())
+        .args([
+            "search",
+            "--suite",
+            "sparse-discovery",
+            "--budget",
+            "32",
+            "--compare",
+        ])
+        .output()
+        .expect("run sparse comparison");
+    assert!(sparse.status.success());
+    let sparse_stdout = String::from_utf8_lossy(&sparse.stdout);
+    assert!(sparse_stdout.contains("\"sparse_case\":true"));
+    assert!(sparse_stdout.contains("\"dense_case\":false"));
 }
 
 fn cli_bin() -> String {

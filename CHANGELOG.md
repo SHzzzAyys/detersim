@@ -5,8 +5,33 @@ beta line; public APIs may change before a stable crates.io release.
 
 ## Unreleased
 
-- Harden V3 release engineering, CLI adoption flows, benchmark evidence, and
-  public API documentation.
+### Added
+
+- `detersim-cli doctor --deep` for template generation, template test, and
+  artifact render sanity checks.
+- `init-sut --template protocol` for a small primary-backup KV adoption
+  scaffold with a negative control and plant-a-bug case.
+- `sparse-discovery` CLI suite for sparse search evidence smoke tests.
+- Suite manifest metadata for case family, bug variant, control kind, expected
+  recall rate, and evidence class.
+- Search comparison fields for dense/sparse classification, first-failure
+  distribution, no-failure strategy count, and strategy winner.
+- Adoption docs for CLI workflows, template contracts, and existing SUT
+  migration.
+
+### Changed
+
+- CI, nightly, and full-soak workflows now exercise deep doctor, sparse search
+  comparison, artifact path rendering, and explanation JSON.
+- Benchmark evidence docs now distinguish dense recall cases from sparse
+  discovery cases.
+
+### Known limitations
+
+- Sparse discovery cases are deterministic smoke evidence for search reporting,
+  not broad statistical proof that one strategy dominates all workloads.
+- DeterSim remains beta; no production Raft, real socket adapter, transparent
+  Tokio interception, full Elle, or stable crates.io API is claimed.
 
 ## v3.0.0-beta.1
 
